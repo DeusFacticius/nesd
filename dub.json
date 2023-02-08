@@ -1,0 +1,23 @@
+{
+	"authors": [
+		"Rick Worthington"
+	],
+	"dependencies": {
+		"bindbc-sdl": "~>1.2.0",
+		"fluent-asserts": "~>1.0.0",
+		"silly": "~>1.1.1"
+	},
+	"description": "A minimal D application.",
+	"libs": [
+		"SDL2",
+		"SDL2_image"
+	],
+	"license": "proprietary",
+	"name": "nesd",
+	"versions": [
+		"BindSDL_Static",
+		"SDL_Image",
+		"SDL_2022",
+		"SDL_tests"
+	]
+}

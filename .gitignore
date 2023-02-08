@@ -1,0 +1,38 @@
+# Git ignore for nesd
+
+# Dlang stuff
+.dub
+docs.json
+__dummy.html
+docs/
+
+# Generated artifacts / binaries
+/nesd
+nesd.so
+nesd.dylib
+nesd.dll
+nesd.a
+nesd.lib
+nesd-test-*
+*.exe
+*.pdb
+*.o
+*.obj
+*.lst
+
+# iNES Roms (whitelist below for public-domain exceptions)
+*.nes
+
+# Whitelisted / public domain iNES ROMs
+!nestest.nes
+
+# IDE project files
+.idea
+.vscode
+*.iml
+
+# Log files (with exceptions)
+*.log
+!nestest.log
+
+

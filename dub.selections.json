@@ -1,0 +1,14 @@
+{
+	"fileVersion": 1,
+	"versions": {
+		"bindbc-loader": "1.0.1",
+		"bindbc-sdl": "1.2.4",
+		"ddmp": "0.0.1-0.dev.3",
+		"dshould": "1.7.1",
+		"fluent-asserts": "1.0.0",
+		"libdparse": "0.20.0",
+		"prettyprint": "1.0.8",
+		"silly": "1.1.1",
+		"unit-threaded": "2.1.2"
+	}
+}
