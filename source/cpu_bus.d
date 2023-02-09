@@ -1,11 +1,13 @@
 module cpu_bus;
 
 import std.format;
+import std.stdio;
 import cpu;
 import bus;
 import ppu;
 import util;
 import mapper;
+import peripheral;
 
 /***************************
 NES (CPU) Memory map
@@ -35,17 +37,38 @@ NES (CPU) Memory map
 
 */
 
+immutable size_t NUM_PERIPHERALS = 2;
+immutable addr JOYSTICK1 = 0x4016;
+immutable addr JOYSTICK2 = 0x4017;
+
 class CPUBus : NESBus {
 public:
     // TODO: Revise visibility of members
     CPU cpu;
     PPU ppu;
     Mapper mapper;
+    AbstractPeripheral[NUM_PERIPHERALS] inputs;
 
-    this(CPU cpu, PPU ppu, Mapper mapper=null) {
+    this(CPU cpu, PPU ppu, Mapper mapper=null, AbstractPeripheral input1=null, AbstractPeripheral input2=null) {
         this.cpu = cpu;
         this.ppu = ppu;
         this.mapper = mapper;
+        inputs[0] = (input1 ? input1 : new NullPeripheral(PeripheralPort.PORT1));
+        inputs[1] = (input2 ? input2 : new NullPeripheral(PeripheralPort.PORT2));
+    }
+
+    void setInput(PeripheralPort port, AbstractPeripheral input) {
+        input = (input ? input : new NullPeripheral());
+        input.port = port;
+        final switch(port) {
+            case PeripheralPort.PORT1:
+                inputs[0] = input;
+                break;
+
+            case PeripheralPort.PORT2:
+                inputs[1] = input;
+                break;
+        }
     }
 
     ubyte readWrite(bool write)(addr address, const ubyte value=0) {
@@ -249,8 +272,45 @@ public:
     }
 
     ubyte readWriteJoystickIO(bool write)(addr address, const ubyte value=0) {
+        assert(address >= 0x4016 && address <= 0x4017);
+        static if(write) {
+            // Somewhat conmplicated here -- a write to 4016 (JOY1)
+            // strobes the input devices based on the low bit,
+            // while a write to 4017 (JOY2) actually controls the
+            // APU(?) frame counter controller
+            // There is more to it than this, but this is a good-enough
+            // solution for now
+            // See: https://www.nesdev.org/wiki/Input_devices
+            if(address == JOYSTICK1) {
+                // Strobe all the inputs
+                foreach(input; inputs) {
+                    input.setStrobe(value & 1);
+                }
+            } else {
+                assert(address == JOYSTICK2);
+                writeFrameCounterControl(value);
+            }
+            // vestigal return value
+            return value;
+        } else {
+            // Reading from inputs
+            if(address == JOYSTICK1) {
+                // Only the low bit is controlled by the input, the rest
+                // are open bus, but some games _expect_ a specific value
+                // in these upper bits, so we cheat and hard-code that value
+                return (0x40 | inputs[0].readAndShift());
+            } else {
+                assert(address == JOYSTICK2);
+                return (0x40 | inputs[1].readAndShift());
+            }
+        }
+        //assert(false, "Should not happen");
+    }
+
+    void writeFrameCounterControl(const ubyte value) {
         // TODO: implement me
-        return 0;
+        //assert(false, "Not implemented yet!");
+        debug writefln("[CPU BUS] Attempted to write $%02X to $4017 (frame counter control)!", value);
     }
 
     ubyte read(const addr address) {

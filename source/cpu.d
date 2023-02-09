@@ -7,6 +7,7 @@ import std.algorithm;
 import std.range;
 import std.traits;
 import std.string;
+import std.typecons;
 import core.thread.fiber;
 import util;
 import bus;
@@ -56,6 +57,7 @@ union ProcessorStatus {
         OVERFLOW = 0x40,
         NEGATIVE = 0x80
     }
+    static assert(isBitFlagEnum!Flags);
 
     void setNZ(ubyte result) {
         Z = (result == 0);
@@ -388,7 +390,9 @@ shared static this() {
         0xFC: AM.ABSOLUTE_X,
         0xC2: AM.IMMEDIATE,
         0xE2: AM.IMMEDIATE,
-    ], null, true);
+    ], (CPU c){ c.nop(); }, true);
+    // TODO: Verify correct cycle counts for illegal
+    // variants of NOP
     // opcodes that will 'KIL(l)' / jam the CPU
     tmp.makeVariants("KIL", 0, [
         0x02: AM.IMPLIED,
@@ -413,7 +417,7 @@ shared static this() {
         0x0F: AM.ABSOLUTE,
         0x1F: AM.ABSOLUTE_X,
         0x1B: AM.ABSOLUTE_Y,
-    ], null, true);
+    ], (CPU c){ c.slo(); }, true);
     // RLA = ROL + AND
     tmp.makeVariants("RLA", 2, [
         0x27: AM.ZP_IMMEDIATE,
@@ -423,7 +427,7 @@ shared static this() {
         0x2F: AM.ABSOLUTE,
         0x3F: AM.ABSOLUTE_X,
         0x3B: AM.ABSOLUTE_Y,
-    ], null, true);
+    ], (CPU c){ c.rla(); }, true);
     // SRE = LSR + EOR
     tmp.makeVariants("SRE", 2, [
         0x47: AM.ZP_IMMEDIATE,
@@ -433,7 +437,7 @@ shared static this() {
         0x4F: AM.ABSOLUTE,
         0x5F: AM.ABSOLUTE_X,
         0x5B: AM.ABSOLUTE_Y,
-    ], null, true);
+    ], (CPU c){ c.sre(); }, true);
     // RRA = ROR + ADC
     tmp.makeVariants("RRA", 2, [
         0x67: AM.ZP_IMMEDIATE,
@@ -443,14 +447,14 @@ shared static this() {
         0x6F: AM.ABSOLUTE,
         0x7F: AM.ABSOLUTE_X,
         0x7B: AM.ABSOLUTE_Y,
-    ], null, true);
+    ], (CPU c){ c.rra(); }, true);
     // SAX = 'Store A&X into {adr}'
     tmp.makeVariants("SAX", 3, [
         0x87: AM.ZP_IMMEDIATE,
         0x97: AM.ZP_Y,
         0x83: AM.INDEXED_INDIRECT,
         0x8F: AM.ABSOLUTE,
-    ], null, true);
+    ], (CPU c){ c.sax(); }, true);
     // LAX = LDA + LDX
     tmp.makeVariants("LAX", 3, [
         0xA7: AM.ZP_IMMEDIATE,
@@ -459,7 +463,7 @@ shared static this() {
         0xB3: AM.INDIRECT_INDEXED,
         0xAF: AM.ABSOLUTE,
         0xBF: AM.ABSOLUTE_Y,
-    ], null, true);
+    ], (CPU c){ c.lax(); }, true);
     // DCP = DEC + CMP
     tmp.makeVariants("DCP", 3, [
         0xC7: AM.ZP_IMMEDIATE,
@@ -469,7 +473,7 @@ shared static this() {
         0xCF: AM.ABSOLUTE,
         0xDF: AM.ABSOLUTE_X,
         0xDB: AM.ABSOLUTE_Y,
-    ], null, true);
+    ], (CPU c){ c.dcp(); }, true);
     // ISC = INC + SBC
     tmp.makeVariants("ISC", 3, [
         0xE7: AM.ZP_IMMEDIATE,
@@ -479,7 +483,7 @@ shared static this() {
         0xEF: AM.ABSOLUTE,
         0xFF: AM.ABSOLUTE_X,
         0xFB: AM.ABSOLUTE_Y,
-    ], null, true);
+    ], (CPU c){ c.isc(); }, true);
     // ANC = AND (#imm) + ASL
     tmp.makeVariants("ANC", 3, [
         0x0B: AM.IMMEDIATE,
@@ -496,7 +500,7 @@ shared static this() {
     // AXS = A&X minus #imm into X
     tmp.makeVariants("AXS", 3, [0xCB: AM.IMMEDIATE], null, true);
     // SBC -- illegal variant of legal opcode (?)
-    tmp.makeVariants("SBC", 3, [0xEB: AM.IMMEDIATE], null, true);
+    tmp.makeVariants("SBC", 3, [0xEB: AM.IMMEDIATE], (CPU c){ c.sbcI(); }, true);
     // AHX = Store A&X&H into {adr} -- conditionally unstable
     tmp.makeVariants("AHX", 3, [
         0x93: AM.INDIRECT_INDEXED,
@@ -606,8 +610,9 @@ class CPU {
         debug addr originalPC = regs.PC;
         debug opBuffer.length = 0;
 
-        // TODO: query pending interrupts at about this point (?)
-        if(pendingNMI || pendingIRQ) {
+        // Query pending interrupts -- a pending NMI will always trigger,
+        // however an IRQ will only trigger if Interrupt Disable is clear
+        if(pendingNMI || (pendingIRQ && !regs.P.I)) {
             // Perform the interrupt sequence and short-circuit
             doInterrupt();
             return;
@@ -694,12 +699,12 @@ class CPU {
                 opdef.handler(this);
                 break;
         }
-        debug {
+        debug(trace) {
             auto endingTicks = tickCounter;
             auto totalTicks = endingTicks-startingTicks;
             auto lines = disassemble(opBuffer, originalPC);
             assert(lines.length == 1, format("Expected lines.length = 1, got %d\nLines: %s", lines.length, lines));
-            debug(trace) writefln("%-30s\tA:%02X X:%02X Y:%02X P:%s SP:%02X CYC:%d TCYC:%d INT:%s", lines[0], regs.A, regs.X, regs.Y, regs.P, regs.S, totalTicks, tickCounter, inInterrupt);
+            writefln("%-30s\tA:%02X X:%02X Y:%02X P:%s SP:%02X CYC:%d TCYC:%d INT:%s", lines[0], regs.A, regs.X, regs.Y, regs.P, regs.S, totalTicks, tickCounter, inInterrupt);
         }
     }
 
@@ -725,8 +730,15 @@ class CPU {
         hi = readPC();
         // Assemble the pointer to effective address
         addrLine = makeAddr(lo, hi);
-        // Read the effecitve address low byte, increment address, incurring a tick
-        lo = readBus(addrLine++);
+        // Read the effecitve address low byte, incurring a tick
+        lo = readBus(addrLine);
+        // Due to a quirk / bug in 6502, if the pointer points to $xxFF,
+        // the high byte will actually be fetched from $xx00
+        // e.g. the page is locked / will not wrap
+        if((addrLine & 0xFF) == 0xFF)
+            addrLine &= 0xFF00;
+        else
+            ++addrLine;
         // Read the effective address high byte, incurring a tick
         hi = readBus(addrLine);
         // Assemble the effective address
@@ -882,8 +894,6 @@ class CPU {
             ((~regs.A & ~operand & 0x80) && (result & 0x80));
         regs.A = ub(result);
         regs.P.setNZ(regs.A);
-        // ALU operation incurs a tick
-        //tick();
     }
 
     /// ADC -- ADd with Carry Accumulator with an immediate value from opcode
@@ -977,7 +987,6 @@ class CPU {
         assert(result == 0b11101110 && cpu.regs.P.N && !cpu.regs.P.Z);
     }
 
-    // TODO: branching, and variable cycle counts
     void branch(ProcessorStatus.Flags flag, bool cond)(ubyte operand) {
         if(cast(bool)(regs.P.P & flag) == cond) {
             // a successful branch inccurs an extra tick due to ALU operation
@@ -1123,9 +1132,9 @@ class CPU {
     void brk() {
         // Perform a dummy read to advance PC (and incur a tick)
         readPC();
-        // Push processor status on stack with the B flag set
-        regs.P.B = true;
-        pushStack(regs.P.P);
+        // Push processor status on stack with the Break
+        // and Interrupt disable flags set
+        pushStack(regs.P.P | ProcessorStatus.Flags.BREAK | ProcessorStatus.Flags.INTERRUPT_DISABLE);
         pushStack(regs.PCL);
         pushStack(regs.PCH);
         // Read the BRK vector from memory, each read incurs a tick
@@ -1187,7 +1196,8 @@ class CPU {
     /// Helper function to consolidate implementation of CMP instruction variants
     void compare(ubyte reg, ubyte operand) {
         ubyte result = cast(ubyte)(reg - operand);
-        regs.P.C = cast(byte)(result) >= 0;
+        //regs.P.C = cast(byte)(result) >= 0;
+        regs.P.C = (reg >= operand);
         regs.P.setNZ(result);
     }
 
@@ -1211,7 +1221,7 @@ class CPU {
         auto cpu = new CPU();
         cpu.regs.A = cast(ubyte)(-10);
         cpu.cmp(5);
-        assert(!cpu.regs.P.C && !cpu.regs.P.Z && cpu.regs.P.N);
+        assert(cpu.regs.P.C && !cpu.regs.P.Z && cpu.regs.P.N);
 
         cpu = new CPU();
         cpu.regs.A = 32;
@@ -1252,6 +1262,16 @@ class CPU {
     /// CPY -- ComPare Y (memory-sourced)
     void cpyM() {
         cpy(readBus(addrLine));
+    }
+
+    /// DCP* -- DEC + CMP
+    void dcp() {
+        ubyte value = readBus(addrLine);
+        --value;
+        compare(regs.A, value);
+        // CMP usually requires an extra tick for ALU operation
+        tick();
+        writeBus(addrLine, value);
     }
 
     /// DECrement value at address
@@ -1356,6 +1376,15 @@ class CPU {
         tick();
     }
 
+    /// ISC/ISB* -- INC + SBC
+    void isc() {
+        ubyte value = readBus(addrLine);
+        sbc(++value);
+        // ALU operation incurs a tick
+        tick();
+        writeBus(addrLine, value);
+    }
+
     /// JMP -- JuMP to address from immediate value (not directly used by interpreter)
     void jmp(addr address) {
         regs.PC = address;
@@ -1424,6 +1453,13 @@ class CPU {
     }
 
     // TODO: Unit test JSR
+
+    /// LAX* -- LDA + LDX
+    void lax() {
+        ubyte value = readBus(addrLine);
+        lda(value);
+        ldx(value);
+    }
 
     /// LDA -- LoaD Accumulator (implementation)
     void lda(ubyte operand) {
@@ -1559,7 +1595,9 @@ class CPU {
     void php() {
         // PHP incurs a dummy tick after decode
         tick();
-        pushStack(regs.P);
+        // B flag is always set in the value pushed by
+        // php
+        pushStack(regs.P.P | ProcessorStatus.Flags.BREAK | ProcessorStatus.Flags.RESERVED);
     }
 
     /*
@@ -1576,22 +1614,37 @@ class CPU {
 
     /// PLA -- PulL Accumulator
     void pla() {
-        // PLA incurs a dummy tick between instruction decode and reading stack
+        // PLA incurs a dummy tick between instruction decode and reading stack (#2)
         tick();
-        regs.A = popStack();
-        // There's actually a tick for ALU operation of incrementing S prior to reading,
+        // There's actually a tick for ALU operation of incrementing S prior to reading (#3),
         // but we do both at the same time, so just add another tick here
         tick();
+        regs.A = popStack();
+        // PLA affects N/Z status flags
+        regs.P.setNZ(regs.A);
     }
 
     /// PLP -- PulL Processor status
     void plp() {
         // PLP incurs a dummy tick between instruction decode and reading stack
         tick();
-        regs.P.P = popStack();
+        // When pulling the processor flags, the Break and Reserved flags
+        // are ignored (they don't 'exist') in the actual register, but
+        // the Reserved flag is instead always set and the Break flag is always
+        // clear
+        with(ProcessorStatus.Flags)
+            regs.P.P = (popStack() & ~BREAK) | RESERVED;
         // There's actually a tick for ALU operation to increment S prior to reading,
         // but we do both at the same time, so just add another tick here
         tick();
+    }
+
+    /// RLA* -- ROL + AND
+    void rla() {
+        ubyte value = readBus(addrLine);
+        ubyte result = rol(value);
+        and(result);
+        writeBus(addrLine, result);
     }
 
     /// ROL -- ROtate Left (implementation)
@@ -1600,19 +1653,23 @@ class CPU {
         regs.P.C = (operand & 0x80) > 0;
         regs.P.setNZ(result);
         // ALU operation requires a tick
-        tick();
+        //tick();
         return result;
     }
 
     /// ROL -- ROtate Left on Accumulator
     void rolA() {
         regs.A = rol(regs.A);
+        // ALU operation incurs a tick
+        tick();
     }
 
     /// ROL -- ROtate Left the contents of a memory address
     void rolM() {
         ubyte value = readBus(addrLine);
         value = rol(value);
+        // ALU operation incurs a tick
+        tick();
         writeBus(addrLine, value);
     }
 
@@ -1638,20 +1695,22 @@ class CPU {
         ubyte result = cast(ubyte)(((operand >> 1) + (regs.P.C ? 0x80 : 0)) & 0xFF);
         regs.P.C = (operand & 0x01) > 0;
         regs.P.setNZ(result);
-        // ALU operation incurs a tick
-        tick();
         return result;
     }
 
     /// ROR -- ROtate Right the Accumulator
     void rorA() {
         regs.A = ror(regs.A);
+        // ALU operation incurs a tick
+        tick();
     }
 
     /// ROR -- ROtate Right the contents of a memory address
     void rorM() {
         ubyte value = readBus(addrLine);
         value = ror(value);
+        // ALU operation incurs a tick
+        tick();
         writeBus(addrLine, value);
     }
 
@@ -1665,6 +1724,16 @@ class CPU {
         result = cpu.ror(result);
         assert(result == 0b10010101);
         assert(!cpu.regs.P.C && !cpu.regs.P.Z && cpu.regs.P.N);
+    }
+
+    /// RRA* -- ROR + ADC
+    void rra() {
+        ubyte value = readBus(addrLine);
+        ubyte result = ror(value);
+        adc(result);
+        // ALU operation incurs a tick
+        tick();
+        writeBus(addrLine, result);
     }
 
     /// RTI -- ReTurn from Interrupt
@@ -1694,12 +1763,20 @@ class CPU {
         // popStack, so just add another tick here
         tick();
         regs.P.P = popStack();
+        // Clear the Break flag if it was set
+        regs.P.B = false;
         regs.PCL = popStack();
         regs.PCH = popStack();
         inInterrupt = false;
     }
 
     // TODO: Unit test RTI once bus is functional
+
+    /// SAX* -- Store A & X into memory
+    void sax() {
+        ubyte result = regs.X & regs.A;
+        writeBus(addrLine, result);
+    }
 
     /// RTS -- ReTurn from Subroutine
     void rts() {
@@ -1781,6 +1858,26 @@ class CPU {
         regs.P.I = true;
         // ALU operation incurs tick
         tick();
+    }
+
+    /// SLO* -- ASL + ORA
+    void slo() {
+        ubyte value = readBus(addrLine);
+        ubyte result = asl(value);
+        ora(result);
+        // ALU operation incurs a tick
+        tick();
+        writeBus(addrLine, result);
+    }
+
+    /// SRE* -- LSR + EOR
+    void sre() {
+        ubyte value = readBus(addrLine);
+        ubyte result = lsr(value);
+        eor(result);
+        // ALU operation incurs a tick
+        tick();
+        writeBus(addrLine, result);
     }
 
     /// STA -- STore Accumulator in memory

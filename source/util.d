@@ -3,6 +3,7 @@ module util;
 import std.traits;
 
 pure int getBit(int value, int bit) {
+    pragma(inline);
     return (value >> bit) & 1;
 }
 
@@ -58,4 +59,14 @@ unittest {
     //assert(reverseBits(0xCA) == 0x53)
     assert(reverseBits(0b11001010) == 0b01010011);
     assert(reverseBits(0b11100001) == 0b10000111);
+}
+
+@("Bool")
+unittest {
+    // Misc. assertions about how D lang behaves Re: bools & ints
+    int t = true, b = false;
+    assert(t == 1);
+    assert(b == 0);
+    assert(1);  // assert non-zero values are true
+    assert(!0); // assert zero values are false
 }

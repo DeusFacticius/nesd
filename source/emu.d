@@ -1,15 +1,55 @@
+/// Module for the actual 'emulator app', i.e. the mediator between
+/// the NES model(s) and host application
+
 module emu;
 
 import std.stdio;
+import std.typecons;
 import bindbc.sdl;
 import sdl_wrapper;
 import nes;
 import ppu;
 import rom;
 import palette;
+import peripheral;
 
-/// Module for the actual 'emulator app', i.e. the mediator between
-/// the NES model(s) and host application
+class KeyboardController : StandardNESController {
+    alias ButtonMapping = int[Button];
+
+    ButtonMapping mapping;
+
+    this(in ButtonMapping mapping = null) {
+        // TODO: make this betterer
+        if(mapping) {
+            this.mapping = cast(typeof(this.mapping))mapping.dup;
+        } else {
+            this.mapping = [
+                Button.A:       SDL_SCANCODE_LGUI,
+                Button.B:       SDL_SCANCODE_LCTRL,
+                Button.SELECT:  SDL_SCANCODE_TAB,
+                Button.START:   SDL_SCANCODE_RETURN,
+                Button.UP:      SDL_SCANCODE_UP,
+                Button.DOWN:    SDL_SCANCODE_DOWN,
+                Button.LEFT:    SDL_SCANCODE_LEFT,
+                Button.RIGHT:   SDL_SCANCODE_RIGHT,
+            ];
+        }
+    }
+
+    override void readButtons() {
+        const ubyte* keyStates = SDL_GetKeyboardState(null);
+        foreach(k,v; mapping) {
+            if(keyStates[v]) {
+                // Set the corresponding bit using the flag as a mask
+                buttons.raw |= (k & 0xFF);
+            } else {
+                // Clear the corresponding bit using the 1's complement
+                // of the flag as a mask
+                buttons.raw &= (~k & 0xFF);
+            }
+        }
+    }
+}
 
 class NESScreenRenderer {
     SDLSurface rawSurface;
@@ -79,10 +119,10 @@ unittest {
     InitSDL();
     scope(exit) ShutdownSDL();
 
-    auto nesRend = new NESScreenRenderer();
-    scope(exit) destroy!false(nesRend);
+    auto window = scoped!SDLWindow("NESScreenRenderer test");
+
+    auto nesRend = scoped!NESScreenRenderer(window);
     assert(nesRend);
-    assert(nesRend.surface);
 }
 
 class EmulatorApp {
@@ -94,6 +134,7 @@ class EmulatorApp {
     this() {
         InitSDL();
         nes = new NES();
+        nes.cpuBus.setInput(PeripheralPort.PORT1, new KeyboardController());
         window = new SDLWindow("NESD");
         screenRenderer = new NESScreenRenderer(window);
 
@@ -109,11 +150,19 @@ class EmulatorApp {
     }
 
     void run() {
+        ulong baseTime = SDL_GetTicks64();
         while(!quit) {
             processEvents();
             // naive speed control, just tick NES as fast as
             // possible :-/
-            nes.altTick();
+            nes.altTick2();
+
+            ulong endTime = SDL_GetTicks64();
+            auto frameTime = (endTime - baseTime);
+            if(frameTime < 16)
+                SDL_Delay(cast(uint)(16 - frameTime));
+
+            baseTime = endTime;
         }
     }
 

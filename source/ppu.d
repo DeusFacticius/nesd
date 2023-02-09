@@ -1069,7 +1069,7 @@ unittest {
     ubyte V = 0x1D;
     // assert that after writing to 0x3F00, all its mirrors return the same value
     ppu.readWritePalettes!true(0x3F00, V);
-    addr[] mirrors = [0x3F00, 0x3F04, 0x3F08, 0x3F0C, 0x3F10, 0x3F14, 0x3F18, 0x3F1C, 0x3F20, 0x3FFC];
+    addr[] mirrors = [0x3F00, 0x3F10, 0x3F20, 0x3FF0];
     foreach(a; mirrors) {
         assert(ppu.readWritePalettes!false(a) == V);
     }

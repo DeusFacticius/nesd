@@ -93,6 +93,15 @@ class NES {
         ppu.doTick();
         tickCounter += NES_CPU_CLOCK_DIVIDER;
     }
+
+    void altTick2() {
+        // Another, ideally faster tick mechanism --
+        // Tick for a full PPU frame
+        auto frameCounter = ppu.frameCounter;
+        while(frameCounter == ppu.frameCounter) {
+            altTick();
+        }
+    }
 }
 
 @("nestest sanity")
