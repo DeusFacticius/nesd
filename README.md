@@ -4,25 +4,18 @@ A hobby-project emulator for the Nintendo Entertainment System (NES) written in 
 
 ### Purpose
 
-This project is both intended as an exercise to better learn and hone my grasp of D language,
-as well as provide a technical challenge to accurately and efficiently emulate a tricky
-platform that is the NES.
+This project is both intended as an exercise to better learn and hone my grasp of D language, as well as provide a technical challenge to accurately and efficiently emulate a tricky platform that is the NES.
 
 ### Forewarnings
 
-* There simply aren't any decent modern IDEs for Dlang on OSX. The Dlang plugin for IntelliJ
-has numerous issues (at least on OSX), even though it (attempts and fails) to leverage mature
-tools like DScanner, DCD, DFix, and DFmt. The impact is that much of this code has been
-written with almost no coding assistence beyond syntax highlighting (and even that doesn't
-always work properly).
-** In addition, integrated debugging doesn't work. Although it should be possible to debug
-directly with GDB, I find this to be incredibly tedious, and that debugging with conditional
-compilation of extra print statements is often faster, albeit messy.
-* This is a _hobby_ project. Although I consider myself to have a fairly low tolerance for
-'slop', I allow myself more here than usual, mainly because I anticipate I will be the only
-one to ever work on this code, and because I can only work on it in spare time. As such,
-there's less than ideal documentation / comments, and more hard-coding, pidgeonholed
-designs / concepts, and even 'magic constants' (which I almost never tolerate).
+* There simply aren't any decent modern IDEs for Dlang on OSX. The Dlang plugin for IntelliJ has numerous issues (at least on OSX), even though it (attempts and fails) to leverage mature tools like DScanner, DCD, DFix, and DFmt. The impact is that much of this code has been written with almost no coding assistance beyond syntax highlighting (and even that doesn't work properly most of the time).
+  * In addition, integrated (IDE) debugging doesn't work. Although it's possible to debug directly with GDB from a terminal, this can be incredibly tedious given the nature of the project, and that debugging with conditional compilation of extra print statements is often faster, albeit messy.
+* This is a _hobby_ project. Although professionally, I consider myself to have a fairly low tolerance for 'slop', I've allowed myself more here than usual, but only because:
+  * I anticipate I will be the only one to ever work on this code
+  * I can only work on it in spare time / time investment is limited.
+  * Despite the great references available, there are still many details regarding the inner workings of the NES that are either vague, undocumented, conflicting, or even wrong. This necessitates doing a lot of trial-and-error tweak/test exploration than ideal.
+  
+  As such, there's less than ideal documentation / comments, and more hard-coding, pidgeonholed designs / concepts, and even 'magic constants' (which I almost never tolerate).
 
 ### References
 
