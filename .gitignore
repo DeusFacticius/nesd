@@ -9,11 +9,11 @@ docs/
 # Generated artifacts / binaries
 out/
 /nesd
-nesd.so
-nesd.dylib
-nesd.dll
-nesd.a
-nesd.lib
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
 nesd-test-*
 *.exe
 *.pdb
