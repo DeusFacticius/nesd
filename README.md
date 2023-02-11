@@ -37,7 +37,7 @@ This project is both intended as an exercise to better learn and hone my grasp o
 * APU
   * Currently only stubbed out, not implemented at all yet.
 * Mappers
-  * NROM (currently only mapper supported)
+  * NROM
     * Still some ambiguities surrounding details of PRG RAM size / presence / configuration.
     * Ditto ^, Re: CHR ROM vs. RAM. SMB uses NROM, but attempts to write to pattern tables.
   * No other mappers supported yet.
