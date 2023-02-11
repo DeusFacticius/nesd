@@ -545,6 +545,13 @@ public:
         //  PP = 2-bit index into the palette.
         // If the pattern bits (PP) are 0, then attribute bits (AA) are ignored,
         // and the color will always be that of the backdrop at $3F00
+
+        // If BG rendering is disabled OR we're in the leftmost 8 columns
+        // of the screen and the left clip BG mask is enabled, the result
+        // is always 0
+        if(!mask.bgEnabled || (mask.leftClipBG && cycle <= 8))
+            return 0;
+
         return ((getBit(atbShiftRegisters[1], fineX) << 3) +
             (getBit(atbShiftRegisters[0], fineX) << 2) +
             (getBit(ptrnShiftRegisters[1], fineX) << 1) +
@@ -552,6 +559,13 @@ public:
     }
 
     ubyte calcCurrentSpritePixel() {
+        // If sprite rendering is disabled OR we're in the first 8 pixels of the scanline
+        // and the sprite left clip mask is enabled, the result is always 0.
+        if(!mask.spritesEnabled || (mask.leftClipSprites && cycle <= 8))
+            return 0;
+
+        // Find the first / highest-priority active sprite with a non-transparent pixel
+        // at the current scanline / cycle.
         for(auto i = 0; i < SECONDARY_OAM_ENTRIES; i++) {
             // Only if a sprite's X counter is 0 is it 'active', so skip ahead
             // if current sprite is inactive
@@ -565,18 +579,22 @@ public:
             // If the pattern bits are 0, the pixel is transparent, so skip to next
             if((pixel & 0x03) == 0)
                 continue;
-            // stuff the 'priority' bit into bit 5 of the result, for proper muxing
-            // with the background pixel if any. it will be masked out / ignored
+            // We've found an opaque pixel of an active sprite.
+            // Stuff the 'priority' bit into bit 5 of the result, for proper muxing
+            // with the background pixel (if any). it will be masked out / ignored
             // when looking up palette color.
             pixel |= (spriteAtbLatches[i].priority << 4);
 
             // If sprite 0 is 'in play' (selected and present in secondary OAM),
             // AND this is iteration 0 (first secondary OAM entry)
-            // AND the sprite pixel is opaque, this MAY be a sprite 0 hit. We can
+            // AND the sprite pixel is opaque,
+            // AND x (cycle-1) is in range [2, 254]
+            // THEN this MAY be a sprite 0 hit. We can
             // use the 6th bit of the result to indicate this, since the final condition
             // (overlap with an opaque pixel of the background) can't be evaluated here
             // (It is expected that the caller will evaluate this though).
-            pixel |= (i == 0 && sprite0Active ? 1 : 0) << 5;
+            if(i == 0 && sprite0Active && cycle >= 3 && cycle <= 255)
+                pixel |= 1 << 5;
 
             // Short-circuit / early exit evaluating remaining secondary OAM for sprites
             return pixel;
