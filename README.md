@@ -32,31 +32,30 @@ designs / concepts, and even 'magic constants' (which I almost never tolerate).
 ### High Level overview / status
 
 * 6502 CPU emulation
-** Experimental use of fibers (coroutines) to simulate granular per-cycle operation
-*** Status -- Functional (with a few cheats here and there), but may ultimately be dropped
-for performance reasons. Most emulators don't seem to support this level of granularity,
-and while fibers seem like a good fit for reducing the complexity that would otherwise
-be necessary, the overhead they introduce may not justify the potential accuracy.
+  * Experimental use of fibers (coroutines) to simulate granular per-cycle operation
+    * Status -- Functional (with a few cheats here and there), but  may ultimately be dropped for performance reasons. Most emulators don't seem to support this level of granularity,
+    and while fibers seem like a good fit for reducing the complexity that would otherwise be necessary, the overhead they introduce may not justify the potential accuracy.
 * PPU emulation
-** Functional, albeit with some cheese:
-*** Bus address / data line multiplexing via ALE (Address Line Enable) triggered octal
-latch (and resulting two-cycles-per-bus-operation) isn't emulated (yet); thus resulting
-quirks like open-bus / open-collector effects aren't simulated properly.
-** Still some sprite / OAM quirks yet to be tested / simulated (e.g. sprite overflow
-bugs that exist in real hardware, and some games expect).
-** Sub-frame behavior of some mechanisms to be refined / investigated
-* APU -- not implemented at all yet.
+  * Functional, albeit with some cheese:
+    * Bus address / data line multiplexing via ALE (Address Line Enable) triggered octal latch (and resulting two-cycles-per-bus-operation) isn't emulated (yet); thus resulting quirks like open-bus / open-collector effects aren't simulated properly.
+  * Still some sprite / OAM quirks yet to be tested / simulated (e.g. sprite overflow
+  bugs that exist in real hardware, and some games expect).
+  * Sub-frame behavior of some mechanisms to be refined / investigated
+* APU
+  * Currently only stubbed out, not implemented at all yet.
 * Mappers
-** Only NROM (Mapper #000) implemented at this time.
-*** NROM - still some fog surrounding details of PRG RAM presence / configuration.
+  * NROM (currently only mapper supported)
+    * Still some ambiguities surrounding details of PRG RAM size / presence / configuration.
+    * Ditto ^, Re: CHR ROM vs. RAM. SMB uses NROM, but attempts to write to pattern tables.
+  * No other mappers supported yet.
 * ROM file support
-** Currently only iNES 1.0 format implemented
-*** iNES 2.0 format is backwards compatible with iNES 1.0 though, so while iNES 2.0 can
-be read / used, implementation doesn't currently utilize the additional features
-provided by newer format.
-* SDL 2.0 used for presentation layer
-** Theoretically portable / cross-platform with no code-changes, but so far only
-developed and tested on intel OSX.
+  * Currently only iNES 1.0 format implemented
+    * iNES 2.0 format is backwards compatible with iNES 1.0 though, so while iNES 2.0 can
+    be read / used, implementation doesn't currently utilize the additional features
+    provided by newer format.
+* SDL2 used for presentation layer
+  * Theoretically portable / cross-platform with no code-changes, but so far only
+  developed and tested on intel OSX.
 
 ### Development Operations
 
@@ -75,12 +74,24 @@ conditional compilation (e.g. `version` scopes).
 dub test -- -v -t 1
 ```
 
+OR
+
+```shell
+./test.sh
+```
+
 #### Run
 
 Dub will automatically perform a build if necessary.
 
 ```shell
 dub run -b debug -- <path/to/romfile.nes>
+```
+
+OR
+
+```shell
+./run.sh [path/to/romfile.nes]
 ```
 
 
