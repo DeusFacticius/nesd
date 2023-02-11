@@ -161,22 +161,22 @@ public:
             case 3:
                 // OAM Address -- write only
                 static if(write) {
-                    // TODO: Implement me
-                    assert(false, "OAMADDR Not implemented!");
+                    ppu.writeOAMADDR(value);
                     // vestigal return value
+                    return value;
                 } else {
+                    // TODO: Emit a warning? This is odd behavior
                     return readPPUOpenBus();
                 }
 
             case 4:
                 // OAM Data -- read/write
                 static if(write) {
-                    // TODO: Implement me
-                    assert(false, "Not implemented!");
+                    ppu.writeOAMDATA(value);
                     // vestigal return value
+                    return value;
                 } else {
-                    // TODO: Implement me
-                    assert(false, "Not implmented!");
+                    return ppu.readOAMDATA();
                 }
 
             case 5:
@@ -255,19 +255,25 @@ public:
     }
 
     ubyte readWriteOAMDMA(bool write)(addr address, const ubyte value=0) {
-        // TODO: implement me
+        assert(address == OAMDMA_ADDRESS);
         static if(write) {
             // do the thing
-            assert(false, "OAMDMA not implemented yet!");
+            cpu.dmaTransfer(value);
             // vestigal return value
-            //return value;
+            return value;
         } else {
+            // TODO: Emit a warning? this is unusual behavior
             return readOpenBus();
         }
     }
 
     ubyte readWriteSND_CHN(bool write)(const ubyte value) {
-        // TODO: implement me
+        // TODO: Implement me
+        static if(write) {
+            debug writefln("[CPU BUS] Attempted to write ($%02X) to SND_CHN ($4015)", value);
+        } else {
+            debug writefln("[CPU BUS] Attempted to read from SDN_CHN ($4015)");
+        }
         return 0;
     }
 

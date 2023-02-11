@@ -135,7 +135,7 @@ class EmulatorApp {
         InitSDL();
         nes = new NES();
         nes.cpuBus.setInput(PeripheralPort.PORT1, new KeyboardController());
-        window = new SDLWindow("NESD");
+        window = new SDLWindow("NESD", 512, 480);
         screenRenderer = new NESScreenRenderer(window);
 
         nes.ppu.addFrameListener(&onPPUFrame);

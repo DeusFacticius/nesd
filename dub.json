@@ -17,7 +17,6 @@
 	"versions": [
 		"BindSDL_Static",
 		"SDL_Image",
-		"SDL_2022",
-		"SDL_tests"
+		"SDL_2022"
 	]
 }

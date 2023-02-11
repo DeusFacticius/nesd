@@ -217,6 +217,17 @@ union OAMEntry {
 }
 static assert(OAMEntry.sizeof == 4*ubyte.sizeof);
 
+union OAMBank(uint numEntries) {
+    ubyte[numEntries*OAMEntry.sizeof]   raw;
+    OAMEntry[numEntries]                entries;
+
+    alias entries this;
+}
+static assert(OAMBank!(10).sizeof == 10*OAMEntry.sizeof);
+
+alias PrimaryOAM = OAMBank!PRIMARY_OAM_ENTRIES;
+alias SecondaryOAM = OAMBank!SECONDARY_OAM_ENTRIES;
+
 union PaletteEntry {
     ubyte packed;
     struct {
@@ -231,6 +242,35 @@ union PaletteEntry {
 static assert(PaletteEntry.sizeof == ubyte.sizeof);
 
 alias Palette = PaletteEntry[4];
+
+union OAMAddr {
+    ubyte raw;
+    struct {
+        mixin(bitfields!(
+            uint, "offset", 2,
+            uint, "index", 6,
+        ));
+    }
+
+    pure bool incrementCheckOverflow(ubyte incIndex=1, ubyte incOffset=0, bool wrap=true) {
+        ubyte originalRaw = raw;
+        index = (index+incIndex) & 0x3F;
+        if(incOffset) {
+            if(wrap)
+                raw += incOffset;
+            else
+                offset = (offset+incOffset) & 0x03;
+        }
+        bool overflowed = raw < originalRaw;
+        if(overflowed)
+            raw = 0;
+        return overflowed;
+    }
+
+    alias raw this;
+}
+static assert(OAMAddr.sizeof == ubyte.sizeof);
+
 // Simulated 256x240 screen image, where each byte is the value of a PaletteEntry
 // (to be converted into a renderable RGB surface)
 // In D -- rectangular static array dimensions are read right-to-left,
@@ -259,8 +299,8 @@ public:
     PPUControl ctrl;
     PPUMask mask;
     PPUStatus status;
-    OAMEntry[PRIMARY_OAM_ENTRIES] primaryOAM;
-    OAMEntry[SECONDARY_OAM_ENTRIES] secondaryOAM;
+    PrimaryOAM primaryOAM;
+    SecondaryOAM secondaryOAM;
     bool sprite0Loaded;
     bool sprite0Active;
     Palette[4] bgPalettes;
@@ -309,6 +349,13 @@ public:
     int sprEvalOffsetCounter;
     // Destination (secondary OAM) write target
     int sprEvalDestIndex;
+
+    // OAM address register ($2003)
+    OAMAddr oamaddr;
+    // Copy of OAMADDR set on the first cycle of sprite evaluation
+    // to determine base address of sprite0
+    OAMAddr oamStartAddress;
+    bool primaryOAMExhausted;
 
     auto addFrameListener(FrameListener listener) {
         return frameListeners.insert(listener);
@@ -366,7 +413,7 @@ public:
 
     @property bool isInVBlank() const {
         return (scanline == 241 && cycle >= 1) ||
-            (scanline > 251 && scanline < NTSC_PRERENDER_SCANLINE) ||
+            (scanline > 241 && scanline < NTSC_PRERENDER_SCANLINE) ||
             (scanline == NTSC_PRERENDER_SCANLINE && cycle < 1);
     }
 
@@ -450,6 +497,28 @@ public:
         ubyte result = readBus(vPtr.raw & PPU_ADDR_MASK);
         incrementPPUADDR();
         return result;
+    }
+
+    void writeOAMADDR(ubyte value) {
+        // TODO: Investigate oddities regarding writes to
+        //      OAMADDR
+        oamaddr.raw = value;
+    }
+
+    void writeOAMDATA(ubyte value) {
+        primaryOAM.raw[oamaddr.raw++] = value;
+    }
+
+    ubyte readOAMDATA() {
+        // Questionable how this should be implemented, as it
+        // seems that there are many quirks regarding reliability
+        // and behavior between OAM decay and behavior / timing
+        // In the meantime, just ignore and return intended value
+        // During cycles 1-64 (secondary OAM clearing), this always
+        // returns 0xFF
+        if(cycle >= 1 && cycle <= 64)
+            return 0xFF;
+        return primaryOAM.raw[oamaddr.raw];
     }
 
     void incrementPPUADDR() {
@@ -560,28 +629,41 @@ public:
         // Unless rendering is enabled (even if sprites are disabled), all of this is skipped
         assert(isRenderingEnabled);
 
+        bool visibleScanline = (scanline >= 0 && scanline < NTSC_SCREEN_H);
+        bool prerenderScanline = (scanline == NTSC_PRERENDER_SCANLINE);
         // Sprite evaluation only occurs during visible scanlines
-        if(scanline >= 0 && scanline < NTSC_SCREEN_H) {
+        if(visibleScanline) {
             if(cycle == 0) {
                 // do nothing / idle tick
             } else if (cycle >= 1 && cycle <= 64 && (cycle & 1) == 0) {
-                // Clear OAM memory by overwriting with 0xFF (only on EVEN ticks)
+                // Clear secondary OAM memory by overwriting with 0xFF (only on EVEN ticks)
                 // (Cheating -- read happens on ODD ticks, write happens on EVEN ticks,
                 // its actually reading from primary OAM but a flag forces the read value to always
                 // be 0xFF)
-                ubyte* target = cast(ubyte*)&secondaryOAM[0];
-                target[(cycle >> 1)-1] = 0xFF;
+                //ubyte* target = cast(ubyte*)&secondaryOAM[0];
+                //target[(cycle >> 1)-1] = 0xFF;
+                secondaryOAM.raw[(cycle >> 1)-1] = 0xFF;
+
             } else if(cycle >= 65 && cycle <= 256) {
                 // Reset the counters on the first cycle of this phase
                 if(cycle == 65) {
-                    sprEvalIndexCounter = sprEvalOffsetCounter = sprEvalDestIndex = 0;
+                    //sprEvalIndexCounter = sprEvalOffsetCounter = sprEvalDestIndex = 0;
+                    // Only the destination / secondary OAM pointer is reset here
+                    // Whatever is in oamaddr is used for primary OAM read position
+                    sprEvalDestIndex = 0;
+                    // Set the starting value of OAMADDR to determine relative sprite0
+                    oamStartAddress = oamaddr;
+                    // Reset primary OAM exhaustion status
+                    primaryOAMExhausted = false;
                     // Initialize the sprite0 'active' flag to the 'loaded'/'in-range' flag
                     sprite0Active = sprite0Loaded;
                     // Clear the sprite0 loaded flag
                     sprite0Loaded = false;
                 }
                 // Continue only while primary OAM index isn't exhausted
-                if(sprEvalIndexCounter < primaryOAM.length) {
+                if(!primaryOAMExhausted) {
+                    // If secondaryOAM isn't full yet, continue normal sprite evaluation
+                    // Otherwise, perform spriteOverflow evaluation
                     if(sprEvalDestIndex < secondaryOAM.length) {
                         // sprite evaluation
                         spriteEvaluationTick();
@@ -591,10 +673,17 @@ public:
                     }
                 }
             } else if(cycle > 256 && cycle <= 320) {
-                // During cycles 257-320, sprite shift registers / latches
+                // During cycles 257-320 (HBLANK), sprite shift registers / latches
                 // are populated from secondaryOAM with results of sprite evaluation
-                spriteBufferPopulateTick();
+                // aka sprite fetching
+                spriteFetchTick();
             }
+        }
+
+        // Almost identical above, but happens on BOTH visible scanlines,
+        // and the pre-render scanine -- OAMADDR reset during cycles 257-320
+        if((visibleScanline || prerenderScanline) && cycle > 256 && cycle <= 320) {
+            oamaddr.raw = 0;
         }
     }
 
@@ -628,9 +717,10 @@ public:
                 bank = ctrl.smallSpritePtrnTbl & 1;
             }
 
-            spritePtrnBuffers[sprIndex][high] = readPatternTileByte(tileNo, bank, ub(localY), false);
-            if(sprite.attrib.flipHorizontal)
-                spritePtrnBuffers[sprIndex][high] = reverseBits(spritePtrnBuffers[sprIndex][high]);
+            ubyte pattern = readPatternTileByte(tileNo, bank, ub(localY), high);
+            // Due to shift registers shifting right, patterns are naturally flipped
+            // horizontally -- so inverse the logic of the flipHorizontal flag
+            spritePtrnBuffers[sprIndex][high] = (sprite.attrib.flipHorizontal ? pattern : reverseBits(pattern));
         } else {
             // TODO: Verify this means what remains of secondaryOAM is all 0xFF
             // (from previous clear, only first byte / Y of first unused secondaryOAM entry
@@ -641,22 +731,27 @@ public:
         }
     }
 
+    ubyte getSpriteHeight() {
+        return (ctrl.useLargeSprites ? 16 : 8);
+    }
+
     void spriteEvaluationTick() {
         // Assert that this method is only called when secondaryOAM isnt' full yet
         assert(sprEvalDestIndex < secondaryOAM.length);
-        const OAMEntry* entry = primaryOAM.ptr+sprEvalIndexCounter;
+        //const OAMEntry* src = primaryOAM.entries.ptr + oamaddr.index;
+        ubyte y = primaryOAM.raw[oamaddr];
+        OAMEntry *dest = &secondaryOAM[sprEvalDestIndex];
         // Copy the Y value from primary -> secondary OAM
-        ubyte y = entry.y;
-        secondaryOAM[sprEvalDestIndex].y = y;
-        ubyte spriteEndY = (y + (ctrl.useLargeSprites ? 16 : 8)) & 0xFF;
+        dest.y = y;
         // If the Y coordinate is in range for rendering, copy remaining bytes
+        ubyte spriteEndY = (y + getSpriteHeight()) & 0xFF;
         if(scanline >= y && scanline < spriteEndY) {
             // Sprite is in range, copy remaining OAM bytes
-            secondaryOAM[sprEvalDestIndex].tileSelector = entry.tileSelector;
-            secondaryOAM[sprEvalDestIndex].attrib = entry.attrib;
-            secondaryOAM[sprEvalDestIndex].x = entry.x;
+            dest.tileSelector = primaryOAM.raw[oamaddr.raw+1];
+            dest.attrib.attributes = primaryOAM.raw[oamaddr.raw+2];
+            dest.x = primaryOAM.raw[oamaddr.raw+3];
             // If this was sprite 0, set the sprite0 active flag
-            if(sprEvalIndexCounter == 0) {
+            if(oamaddr == oamStartAddress) {
                 sprite0Loaded = true;
                 // Verify our assumption that sprite0 will always end up in first slot
                 assert(sprEvalDestIndex == 0);
@@ -665,31 +760,33 @@ public:
             ++sprEvalDestIndex;
         }
         // Increment the primaryOAM index counter
-        ++sprEvalIndexCounter;
+        primaryOAMExhausted = oamaddr.incrementCheckOverflow();
+        //++sprEvalIndexCounter;
     }
 
     void spriteEvaluationOverflowTick() {
         // Assert this method is only called when secondary OAM is full
         assert(sprEvalDestIndex >= secondaryOAM.length);
         // Emulate sprite overflow bug that erronously sometimes doesn't use Y values
-        ubyte y = primaryOAM[sprEvalIndexCounter].values[sprEvalOffsetCounter];
-        ubyte spriteEndY = (y + (ctrl.useLargeSprites ? 16 : 8)) & 0xFF;
+        //OAMEntry *src = cast(OAMEntry*)(primaryOAM.raw.ptr + oamaddr.raw);
+        //ubyte y = primaryOAM[sprEvalIndexCounter].values[sprEvalOffsetCounter];
+        ubyte y = primaryOAM.raw[oamaddr.raw];
+        ubyte spriteEndY = (y + getSpriteHeight()) & 0xFF;
         if(scanline >= y && scanline < spriteEndY) {
-            // Sprite in range, but secondaryOAM is full so trigger the sprite overflow flag
+            // Sprite in range, but secondaryOAM is full, so trigger the sprite overflow flag
+            // TODO: This shouldn't be set until cycle 257 / start of HBlank
             status.spriteOverflow = true;
             // Skip actually reading next 3 OAM bytes, but simulate incrementing offset 3 times
-            sprEvalOffsetCounter += 3;
-            // Offset wraps to index
-            sprEvalIndexCounter += 1 + (sprEvalOffsetCounter >> 2);
-            sprEvalOffsetCounter &= 0x03;
+            primaryOAMExhausted = oamaddr.incrementCheckOverflow();
         } else {
             // Sprite not in range -- erroneously increment both index and offset ('without carry')
-            sprEvalIndexCounter++;
-            sprEvalOffsetCounter = (sprEvalOffsetCounter+1) & 0x03;
+            //sprEvalIndexCounter++;
+            //sprEvalOffsetCounter = (sprEvalOffsetCounter+1) & 0x03;
+            primaryOAMExhausted = oamaddr.incrementCheckOverflow(1,1,false);
         }
     }
 
-    void spriteBufferPopulateTick() {
+    void spriteFetchTick() {
         // Assert this is only called during the first part of HBlank, when sprite rendering buffers / latches
         // should be getting initialized / populated for the next scanline
         assert(cycle > 256 && cycle <= 320);
@@ -734,14 +831,14 @@ public:
         bool isPreRenderScanline = (scanline == NTSC_PRERENDER_SCANLINE);
 
         if(isVisibleScanline || isPreRenderScanline) {
+            auto subCycle = cycle & 7;
+            // On cycles 9, 17, 25, ..., 257: Shift registers are updated from latches
+            if(cycle >= 9 && cycle <= 257 && subCycle == 1)
+                updateBgShiftRegisters();
+
             // On cycles of visible pixels AND during the last ~20 cycles of HBlank
-            if((cycle > 0 && cycle <= 256) || (cycle >= 320)) {
-                // Mask all but lowest 3 bits
-                auto subCycle = cycle & 7;
-                if(subCycle == 1) {
-                    // On every 8th+1 cycle, shift registers are updated with contents of buffers / latches
-                    updateBgShiftRegisters();
-                } else if(subCycle == 2) {
+            if((cycle >= 1 && cycle <= 256) || (cycle > 320)) {
+                if(subCycle == 2) {
                     // On every 8th+2 cycle, nametable is fetched
                     nametableBufferLatch = readBus(getCurrentTileAddr());
                 } else if(subCycle == 4) {
@@ -752,6 +849,8 @@ public:
                     // Not found in documentation anywhere -- but I suspect the bits
                     // are supposed to be flipped; given that the shift registers shift right,
                     // but render left to right
+                    // TODO: Maybe that source was wrong, and it should be left shifts like
+                    //  I originally thought...
                     ptrnLatches[0] = reverseBits(readPatternTileByte(nametableBufferLatch, ub(ctrl.bgPtrnTbl), ub(vPtr.fineY), false));
                 } else if(subCycle == 0) {
                     // On every 8th cycle, bg high bits pattern latch is updated, before advancing vPtr horizontally
@@ -941,6 +1040,18 @@ public:
 
         atbShiftRegisters[1] >>= 1;
         atbShiftRegisters[0] >>= 1;
+        // The attribute shift registers are only 8 bit, so they don't
+        // include 'buffer' bits, instead the high bit is fed from
+        // 1-bit latches after each shift
+        if(atbLatches[1] & 1)
+            atbShiftRegisters[1] |= 0x80;
+        else
+            atbShiftRegisters[1] &= 0x7F;
+
+        if(atbLatches[0] & 1)
+            atbShiftRegisters[0] |= 0x80;
+        else
+            atbShiftRegisters[0] &= 0x7F;
     }
 
     void updateBgShiftRegisters() {
@@ -949,8 +1060,23 @@ public:
         ptrnShiftRegisters[1] = ((ptrnLatches[1] << 8) & 0xFF00) | (ptrnShiftRegisters[1]&0xFF);
         ptrnShiftRegisters[0] = ((ptrnLatches[0] << 8) & 0xFF00) | (ptrnShiftRegisters[0]&0xFF);
         // likewise copy the contents of the attribute buffer latch bits into the 1-bit feeder latches
-        atbLatches[1] = (attbBufferLatch >> 1) & 0x01;
-        atbLatches[0] = (attbBufferLatch & 0x01);
+        // TODO: The two bits of atbBufferLatch chosen to fill atbLatches needs to be selected
+        // based on the tile row/col
+        //atbLatches[1] = (attbBufferLatch >> 1) & 0x01;
+        //atbLatches[0] = (attbBufferLatch & 0x01);
+        ubyte attbBits = calcCurrentAttrib();
+        atbLatches[1] = (attbBits >> 1) & 1;
+        atbLatches[0] = attbBits & 1;
+    }
+
+    ubyte calcCurrentAttrib() {
+        // Y coordinate selects nibble, X coordinate selects half-nibble
+        ubyte result = attbBufferLatch;
+        if(vPtr.coarseY & 1)
+            result >>= 4;
+        if(vPtr.coarseX & 1)
+            result >>= 2;
+        return result;
     }
 
     void updateSpriteShiftRegisters() {

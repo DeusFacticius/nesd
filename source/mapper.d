@@ -2,6 +2,7 @@ module mapper;
 
 import std.format;
 import std.algorithm.comparison;    // for min(...)
+debug import std.stdio;
 import bus;
 import util;
 import rom;
@@ -107,7 +108,10 @@ class NROMMapper : Mapper {
                 // pattern tables, aka CHR ROM (sometimes RAM)
                 static if(write) {
                     // TODO: should this be allowed?
-                    assert(false, "Attempted to write to pattern ROM!");
+                    //assert(false, "Attempted to write to pattern ROM!");
+                    debug writefln("[MAPPER] Attempted to write $%02X into pattern rom @ $%04X", value, address);
+                    // vestigal return value
+                    return value;
                 } else {
                     // NROM does not have a bank switching mechanism for multiple
                     // CHR ROM banks, assume first is only active bank

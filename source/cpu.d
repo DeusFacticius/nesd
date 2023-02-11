@@ -29,6 +29,8 @@ immutable addr CPU_RESET_VECTOR     = 0xFFFC;
 immutable addr CPU_CARTRIDGE_SPACE_START    = 0x4020;
 immutable addr CPU_CARTRIDGE_SPACE_END      = 0xFFFF;
 
+immutable addr OAMDMA_ADDRESS       = 0x4014;
+
 union ProcessorStatus {
     ubyte P = Flags.RESERVED;
     mixin(bitfields!(
@@ -835,6 +837,13 @@ class CPU {
         bus.write(address, value);
         static if(doTick)
             tick!yield();
+    }
+
+    void dmaTransfer(ubyte page) {
+        foreach(i; 0..256) {
+            ubyte value = readBus(makeAddr(ub(i), page));
+            writeBus(0x2004, value);
+        }
     }
 
     void enqueueNMIInterrupt() {
