@@ -26,13 +26,11 @@ This project is both intended as an exercise to better learn and hone my grasp o
 
 * 6502 CPU emulation
   * Experimental use of fibers (coroutines) to simulate granular per-cycle operation
-    * Status -- Functional (with a few cheats here and there), but  may ultimately be dropped for performance reasons. Most emulators don't seem to support this level of granularity,
-    and while fibers seem like a good fit for reducing the complexity that would otherwise be necessary, the overhead they introduce may not justify the potential accuracy.
+    * Status -- Functional (with a few cheats here and there), but  may ultimately be dropped for performance reasons. Most emulators don't seem to support this level of granularity, and while fibers seem like a good fit for reducing the complexity that would otherwise be necessary, the overhead they introduce may not justify the potential accuracy.
 * PPU emulation
   * Functional, albeit with some cheese:
     * Bus address / data line multiplexing via ALE (Address Line Enable) triggered octal latch (and resulting two-cycles-per-bus-operation) isn't emulated (yet); thus resulting quirks like open-bus / open-collector effects aren't simulated properly.
-  * Still some sprite / OAM quirks yet to be tested / simulated (e.g. sprite overflow
-  bugs that exist in real hardware, and some games expect).
+  * Still some sprite / OAM quirks yet to be tested / simulated (e.g. sprite overflow bugs that exist in real hardware, and some games expect).
   * Sub-frame behavior of some mechanisms to be refined / investigated
 * APU
   * Currently only stubbed out, not implemented at all yet.
@@ -43,12 +41,9 @@ This project is both intended as an exercise to better learn and hone my grasp o
   * No other mappers supported yet.
 * ROM file support
   * Currently only iNES 1.0 format implemented
-    * iNES 2.0 format is backwards compatible with iNES 1.0 though, so while iNES 2.0 can
-    be read / used, implementation doesn't currently utilize the additional features
-    provided by newer format.
+    * iNES 2.0 format is backwards compatible with iNES 1.0 though, so while iNES 2.0 can be read / used, implementation doesn't currently utilize the additional features provided by newer format.
 * SDL2 used for presentation layer
-  * Theoretically portable / cross-platform with no code-changes, but so far only
-  developed and tested on intel OSX.
+  * Theoretically portable / cross-platform with no code-changes, but so far only developed and tested on intel OSX.
 
 ### Development Operations
 
@@ -60,8 +55,7 @@ dub build -b debug -v
 
 #### Build & run unit tests
 
-Optionally configure dub.json to enable / disable some unit tests guarded by
-conditional compilation (e.g. `version` scopes).
+Optionally configure dub.json to enable / disable some unit tests guarded by conditional compilation (e.g. `version` scopes).
 
 ```shell
 dub test -- -v -t 1
