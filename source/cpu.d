@@ -38,8 +38,8 @@ union ProcessorStatus {
         bool, "Z", 1,   // Zero flag
         bool, "I", 1,   // Interrupt disable flag
         bool, "D", 1,   // Decimal flag
-        bool, "R", 1,   // reserved / dummy, always 1 (?)
         bool, "B", 1,   // 'break' flag
+        bool, "R", 1,   // reserved / dummy, always 1 (?)
         bool, "V", 1,   // oVerflow flag
         bool, "N", 1,   // Negative flag
     ));
@@ -54,8 +54,8 @@ union ProcessorStatus {
         ZERO = 0x02,
         INTERRUPT_DISABLE = 0x04,
         DECIMAL = 0x08,
-        RESERVED = 0x10,
-        BREAK = 0x20,
+        BREAK = 0x10,
+        RESERVED = 0x20,
         OVERFLOW = 0x40,
         NEGATIVE = 0x80
     }
@@ -131,10 +131,18 @@ static assert(Registers.PC.offsetof == Registers.PCL.offsetof);
 
 alias OpHandler = void function(CPU cpu);
 
+enum OpClass {
+    READ,
+    RMW,
+    WRITE,
+    CONTROL,
+}
+
 struct OpCodeDef{
-    this(string mnemonic, AddressMode mode, ubyte opcode, ubyte minTicks, ubyte size=0, OpHandler handler=null, bool illegal=false) {
+    this(string mnemonic, AddressMode mode, OpClass cls, ubyte opcode, ubyte minTicks, ubyte size=0, OpHandler handler=null, bool illegal=false) {
         this.mnemonic = mnemonic;
         this.mode = mode;
+        this.opclass = cls;
         this.opcode = opcode;
         this.minTicks = minTicks;
         this.size = (size == 0 ? getOpcodeSize(mode) : size);
@@ -144,6 +152,7 @@ struct OpCodeDef{
 
     string mnemonic;
     AddressMode mode;
+    OpClass opclass;
     ubyte opcode;
     ubyte size = 1;
     ubyte minTicks;
@@ -153,11 +162,11 @@ struct OpCodeDef{
     // TODO: Struct layout / alignment not optimal
 }
 
-void makeVariants(OpCodeDef*[] table, string mnemonic, const ubyte baseTicks, const AddressMode[int] pairs, OpHandler handler=null, bool illegal=false) {
+void makeVariants(OpCodeDef*[] table, string mnemonic, OpClass cls, const ubyte baseTicks, const AddressMode[int] pairs, OpHandler handler=null, bool illegal=false) {
     foreach(opcode, mode; pairs) {
         ubyte key = ub(opcode);
         assert(table[key] == null, format("Dupliate entry for opcode: %02X", key));
-        table[key] = new OpCodeDef(mnemonic, mode, key, baseTicks, getOpcodeSize(mode), handler, illegal);
+        table[key] = new OpCodeDef(mnemonic, mode, cls, key, baseTicks, getOpcodeSize(mode), handler, illegal);
     }
 }
 
@@ -166,8 +175,8 @@ immutable OpCodeDef*[256] OPCODE_DEFS;
 shared static this() {
     alias AM = AddressMode;
     OpCodeDef*[256] tmp;
-    tmp.makeVariants("ADC", 2, [0x69: AM.IMMEDIATE], (CPU c){ c.adcI(); });
-    tmp.makeVariants("ADC", 2, [
+    tmp.makeVariants("ADC", OpClass.READ, 2, [0x69: AM.IMMEDIATE], (CPU c){ c.adcI(); });
+    tmp.makeVariants("ADC", OpClass.READ, 2, [
         0x65: AM.ZP_IMMEDIATE,
         0x75: AM.ZP_X,
         0x6D: AM.ABSOLUTE,
@@ -176,8 +185,8 @@ shared static this() {
         0x61: AM.INDEXED_INDIRECT,
         0x71: AM.INDIRECT_INDEXED,
     ], (CPU c){ c.adcM(); });
-    tmp.makeVariants("AND", 2, [0x29: AM.IMMEDIATE], (CPU c){ c. andI(); });
-    tmp.makeVariants("AND", 2, [
+    tmp.makeVariants("AND", OpClass.READ, 2, [0x29: AM.IMMEDIATE], (CPU c){ c. andI(); });
+    tmp.makeVariants("AND", OpClass.READ, 2, [
         0x25: AM.ZP_IMMEDIATE,
         0x35: AM.ZP_X,
         0x2D: AM.ABSOLUTE,
@@ -186,32 +195,32 @@ shared static this() {
         0x21: AM.INDEXED_INDIRECT,
         0x31: AM.INDIRECT_INDEXED,
     ], (CPU c){ c.andM(); });
-    tmp.makeVariants("ASL", 2, [0x0A: AM.ACCUMULATOR], (CPU c){ c.aslA(); });
-    tmp.makeVariants("ASL", 2, [
+    tmp.makeVariants("ASL", OpClass.RMW, 2, [0x0A: AM.ACCUMULATOR], (CPU c){ c.aslA(); });
+    tmp.makeVariants("ASL", OpClass.RMW, 2, [
         0x06: AM.ZP_IMMEDIATE,
         0x16: AM.ZP_X,
         0x0E: AM.ABSOLUTE,
-        0x1E: AM.INDEXED_INDIRECT,
+        0x1E: AM.ABSOLUTE_X,
     ], (CPU c){ c.aslM(); });
-    tmp.makeVariants("BCC", 2, [0x90: AM.RELATIVE], (CPU c){ c.bcc(); });
-    tmp.makeVariants("BCS", 2, [0xB0: AM.RELATIVE], (CPU c){ c.bcs(); });
-    tmp.makeVariants("BEQ", 2, [0xF0: AM.RELATIVE], (CPU c){ c.beq(); });
-    tmp.makeVariants("BIT", 2, [
+    tmp.makeVariants("BCC", OpClass.CONTROL, 2, [0x90: AM.RELATIVE], (CPU c){ c.bcc(); });
+    tmp.makeVariants("BCS", OpClass.CONTROL, 2, [0xB0: AM.RELATIVE], (CPU c){ c.bcs(); });
+    tmp.makeVariants("BEQ", OpClass.CONTROL, 2, [0xF0: AM.RELATIVE], (CPU c){ c.beq(); });
+    tmp.makeVariants("BIT", OpClass.CONTROL, 2, [
         0x24: AM.ZP_IMMEDIATE,
         0x2C: AM.ABSOLUTE,
     ], (CPU c){ c.bit(); });
-    tmp.makeVariants("BMI", 2, [0x30: AM.RELATIVE], (CPU c){ c.bmi(); });
-    tmp.makeVariants("BNE", 2, [0xD0: AM.RELATIVE], (CPU c){ c.bne(); });
-    tmp.makeVariants("BPL", 2, [0x10: AM.RELATIVE], (CPU c){ c.bpl(); });
-    tmp.makeVariants("BRK", 1, [0x00: AM.IMPLIED], (CPU c){ c.brk(); });
-    tmp.makeVariants("BVC", 2, [0x50: AM.RELATIVE], (CPU c){ c.bvc(); });
-    tmp.makeVariants("BVS", 2, [0x70: AM.RELATIVE], (CPU c){ c.bvs(); });
-    tmp.makeVariants("CLC", 1, [0x18: AM.IMPLIED], (CPU c){ c.clc(); });
-    tmp.makeVariants("CLD", 1, [0xD8: AM.IMPLIED], (CPU c){ c.cld(); });
-    tmp.makeVariants("CLI", 1, [0x58: AM.IMPLIED], (CPU c){ c.cli(); });
-    tmp.makeVariants("CLV", 1, [0xB8: AM.IMPLIED], (CPU c){ c.clv(); });
-    tmp.makeVariants("CMP", 2, [0xC9: AM.IMMEDIATE], (CPU c){ c.cmpI(); });
-    tmp.makeVariants("CMP", 2, [
+    tmp.makeVariants("BMI", OpClass.CONTROL, 2, [0x30: AM.RELATIVE], (CPU c){ c.bmi(); });
+    tmp.makeVariants("BNE", OpClass.CONTROL, 2, [0xD0: AM.RELATIVE], (CPU c){ c.bne(); });
+    tmp.makeVariants("BPL", OpClass.CONTROL, 2, [0x10: AM.RELATIVE], (CPU c){ c.bpl(); });
+    tmp.makeVariants("BRK", OpClass.CONTROL, 1, [0x00: AM.IMPLIED], (CPU c){ c.brk(); });
+    tmp.makeVariants("BVC", OpClass.CONTROL, 2, [0x50: AM.RELATIVE], (CPU c){ c.bvc(); });
+    tmp.makeVariants("BVS", OpClass.CONTROL, 2, [0x70: AM.RELATIVE], (CPU c){ c.bvs(); });
+    tmp.makeVariants("CLC", OpClass.CONTROL, 1, [0x18: AM.IMPLIED], (CPU c){ c.clc(); });
+    tmp.makeVariants("CLD", OpClass.CONTROL, 1, [0xD8: AM.IMPLIED], (CPU c){ c.cld(); });
+    tmp.makeVariants("CLI", OpClass.CONTROL, 1, [0x58: AM.IMPLIED], (CPU c){ c.cli(); });
+    tmp.makeVariants("CLV", OpClass.CONTROL, 1, [0xB8: AM.IMPLIED], (CPU c){ c.clv(); });
+    tmp.makeVariants("CMP", OpClass.READ, 2, [0xC9: AM.IMMEDIATE], (CPU c){ c.cmpI(); });
+    tmp.makeVariants("CMP", OpClass.READ, 2, [
         0xC5: AM.ZP_IMMEDIATE,
         0xD5: AM.ZP_X,
         0xCD: AM.ABSOLUTE,
@@ -220,26 +229,26 @@ shared static this() {
         0xC1: AM.INDEXED_INDIRECT,
         0xD1: AM.INDIRECT_INDEXED,
     ], (CPU c){ c.cmpM(); });
-    tmp.makeVariants("CPX", 2, [0xE0: AM.IMMEDIATE], (CPU c){ c.cpxI(); });
-    tmp.makeVariants("CPX", 2, [
+    tmp.makeVariants("CPX", OpClass.READ, 2, [0xE0: AM.IMMEDIATE], (CPU c){ c.cpxI(); });
+    tmp.makeVariants("CPX", OpClass.READ, 2, [
         0xE4: AM.ZP_IMMEDIATE,
         0xEC: AM.ABSOLUTE,
     ], (CPU c){ c.cpxM(); });
-    tmp.makeVariants("CPY", 2, [0xC0: AM.IMMEDIATE], (CPU c){ c.cpyI(); });
-    tmp.makeVariants("CPY", 2, [
+    tmp.makeVariants("CPY", OpClass.READ, 2, [0xC0: AM.IMMEDIATE], (CPU c){ c.cpyI(); });
+    tmp.makeVariants("CPY", OpClass.READ, 2, [
         0xC4: AM.ZP_IMMEDIATE,
         0xCC: AM.ABSOLUTE,
     ], (CPU c){ c.cpyM(); });
-    tmp.makeVariants("DEC", 5, [
+    tmp.makeVariants("DEC", OpClass.RMW, 5, [
         0xC6: AM.ZP_IMMEDIATE,
         0xD6: AM.ZP_X,
         0xCE: AM.ABSOLUTE,
         0xDE: AM.ABSOLUTE_X,
     ], (CPU c){ c.dec(); });
-    tmp.makeVariants("DEX", 2, [0xCA: AM.IMPLIED], (CPU c){ c.dex(); });
-    tmp.makeVariants("DEY", 2, [0x88: AM.IMPLIED], (CPU c){ c.dey(); });
-    tmp.makeVariants("EOR", 2, [0x49: AM.IMMEDIATE], (CPU c){ c.eorI(); });
-    tmp.makeVariants("EOR", 2, [
+    tmp.makeVariants("DEX", OpClass.CONTROL, 2, [0xCA: AM.IMPLIED], (CPU c){ c.dex(); });
+    tmp.makeVariants("DEY", OpClass.CONTROL, 2, [0x88: AM.IMPLIED], (CPU c){ c.dey(); });
+    tmp.makeVariants("EOR", OpClass.READ, 2, [0x49: AM.IMMEDIATE], (CPU c){ c.eorI(); });
+    tmp.makeVariants("EOR", OpClass.READ, 2, [
         0x45: AM.ZP_IMMEDIATE,
         0x55: AM.ZP_X,
         0x4D: AM.ABSOLUTE,
@@ -248,21 +257,21 @@ shared static this() {
         0x41: AM.INDEXED_INDIRECT,
         0x51: AM.INDIRECT_INDEXED,
     ], (CPU c){ c.eorM(); });
-    tmp.makeVariants("INC", 5, [
+    tmp.makeVariants("INC", OpClass.RMW, 5, [
         0xE6: AM.ZP_IMMEDIATE,
         0xF6: AM.ZP_X,
         0xEE: AM.ABSOLUTE,
         0xFE: AM.ABSOLUTE_X,
     ], (CPU c){ c.inc(); });
-    tmp.makeVariants("INX", 2, [0xE8: AM.IMPLIED], (CPU c){ c.inx(); });
-    tmp.makeVariants("INY", 2, [0xC8: AM.IMPLIED], (CPU c){ c.iny(); });
-    tmp.makeVariants("JMP", 3, [
+    tmp.makeVariants("INX", OpClass.CONTROL, 2, [0xE8: AM.IMPLIED], (CPU c){ c.inx(); });
+    tmp.makeVariants("INY", OpClass.CONTROL, 2, [0xC8: AM.IMPLIED], (CPU c){ c.iny(); });
+    tmp.makeVariants("JMP", OpClass.CONTROL, 3, [
         0x4C: AM.ABSOLUTE,
         0x6C: AM.INDIRECT,
     ], (CPU c){ c.jmp(); });
-    tmp.makeVariants("JSR", 6, [0x20: AM.ABSOLUTE], (CPU c){ c.jsr(); });
-    tmp.makeVariants("LDA", 2, [0xA9: AM.IMMEDIATE], (CPU c){ c.ldaI(); });
-    tmp.makeVariants("LDA", 2, [
+    tmp.makeVariants("JSR", OpClass.CONTROL, 6, [0x20: AM.ABSOLUTE], (CPU c){ c.jsr(); });
+    tmp.makeVariants("LDA", OpClass.READ, 2, [0xA9: AM.IMMEDIATE], (CPU c){ c.ldaI(); });
+    tmp.makeVariants("LDA", OpClass.READ, 2, [
         0xA5: AM.ZP_IMMEDIATE,
         0xB5: AM.ZP_X,
         0xAD: AM.ABSOLUTE,
@@ -271,30 +280,30 @@ shared static this() {
         0xA1: AM.INDEXED_INDIRECT,
         0xB1: AM.INDIRECT_INDEXED,
     ], (CPU c){ c.ldaM(); });
-    tmp.makeVariants("LDX", 2, [0xA2: AM.IMMEDIATE], (CPU c){ c.ldxI(); });
-    tmp.makeVariants("LDX", 2, [
+    tmp.makeVariants("LDX", OpClass.READ, 2, [0xA2: AM.IMMEDIATE], (CPU c){ c.ldxI(); });
+    tmp.makeVariants("LDX", OpClass.READ, 2, [
         0xA6: AM.ZP_IMMEDIATE,
         0xB6: AM.ZP_Y,
         0xAE: AM.ABSOLUTE,
         0xBE: AM.ABSOLUTE_Y,
     ], (CPU c){ c.ldxM(); });
-    tmp.makeVariants("LDY", 2, [0xA0: AM.IMMEDIATE], (CPU c){ c.ldyI(); });
-    tmp.makeVariants("LDY", 2, [
+    tmp.makeVariants("LDY", OpClass.READ, 2, [0xA0: AM.IMMEDIATE], (CPU c){ c.ldyI(); });
+    tmp.makeVariants("LDY", OpClass.READ, 2, [
         0xA4: AM.ZP_IMMEDIATE,
         0xB4: AM.ZP_X,
         0xAC: AM.ABSOLUTE,
         0xBC: AM.ABSOLUTE_X,
     ], (CPU c){ c.ldyM(); });
-    tmp.makeVariants("LSR", 2, [0x4A: AM.ACCUMULATOR], (CPU c){ c.lsrA(); });
-    tmp.makeVariants("LSR", 2, [
+    tmp.makeVariants("LSR", OpClass.RMW, 2, [0x4A: AM.ACCUMULATOR], (CPU c){ c.lsrA(); });
+    tmp.makeVariants("LSR", OpClass.RMW, 2, [
         0x46: AM.ZP_IMMEDIATE,
         0x56: AM.ZP_X,
         0x4E: AM.ABSOLUTE,
         0x5E: AM.ABSOLUTE_X,
     ], (CPU c){ c.lsrM(); });
-    tmp.makeVariants("NOP", 2, [0xEA: AM.IMPLIED], (CPU c){ c.nop(); });
-    tmp.makeVariants("ORA", 2, [0x09: AM.IMMEDIATE], (CPU c){ c.oraI(); });
-    tmp.makeVariants("ORA", 2, [
+    tmp.makeVariants("NOP", OpClass.CONTROL, 2, [0xEA: AM.IMPLIED], (CPU c){ c.nop!true(); });
+    tmp.makeVariants("ORA", OpClass.READ, 2, [0x09: AM.IMMEDIATE], (CPU c){ c.oraI(); });
+    tmp.makeVariants("ORA", OpClass.READ, 2, [
         0x05: AM.ZP_IMMEDIATE,
         0x15: AM.ZP_X,
         0x0D: AM.ABSOLUTE,
@@ -303,28 +312,28 @@ shared static this() {
         0x01: AM.INDEXED_INDIRECT,
         0x11: AM.INDIRECT_INDEXED,
     ], (CPU c){ c.oraM(); });
-    tmp.makeVariants("PHA", 3, [0x48: AM.IMPLIED], (CPU c){ c.pha(); });
-    tmp.makeVariants("PHP", 3, [0x08: AM.IMPLIED], (CPU c){ c.php(); });
-    tmp.makeVariants("PLA", 4, [0x68: AM.IMPLIED], (CPU c){ c.pla(); });
-    tmp.makeVariants("PLP", 4, [0x28: AM.IMPLIED], (CPU c){ c.plp(); });
-    tmp.makeVariants("ROL", 2, [0x2A: AM.ACCUMULATOR], (CPU c){ c.rolA(); });
-    tmp.makeVariants("ROL", 2, [
+    tmp.makeVariants("PHA", OpClass.CONTROL, 3, [0x48: AM.IMPLIED], (CPU c){ c.pha(); });
+    tmp.makeVariants("PHP", OpClass.CONTROL, 3, [0x08: AM.IMPLIED], (CPU c){ c.php(); });
+    tmp.makeVariants("PLA", OpClass.CONTROL, 4, [0x68: AM.IMPLIED], (CPU c){ c.pla(); });
+    tmp.makeVariants("PLP", OpClass.CONTROL, 4, [0x28: AM.IMPLIED], (CPU c){ c.plp(); });
+    tmp.makeVariants("ROL", OpClass.RMW, 2, [0x2A: AM.ACCUMULATOR], (CPU c){ c.rolA(); });
+    tmp.makeVariants("ROL", OpClass.RMW, 2, [
         0x26: AM.ZP_IMMEDIATE,
         0x36: AM.ZP_X,
         0x2E: AM.ABSOLUTE,
         0x3E: AM.ABSOLUTE_X,
     ], (CPU c){ c.rolM(); });
-    tmp.makeVariants("ROR", 2, [0x6A: AM.ACCUMULATOR], (CPU c){ c.rorA(); });
-    tmp.makeVariants("ROR", 2, [
+    tmp.makeVariants("ROR", OpClass.RMW, 2, [0x6A: AM.ACCUMULATOR], (CPU c){ c.rorA(); });
+    tmp.makeVariants("ROR", OpClass.RMW, 2, [
         0x66: AM.ZP_IMMEDIATE,
         0x76: AM.ZP_X,
         0x6E: AM.ABSOLUTE,
         0x7E: AM.ABSOLUTE_X,
     ], (CPU c){ c.rorM(); });
-    tmp.makeVariants("RTI", 6, [0x40: AM.IMPLIED], (CPU c){ c.rti(); });
-    tmp.makeVariants("RTS", 6, [0x60: AM.IMPLIED], (CPU c){ c.rts(); });
-    tmp.makeVariants("SBC", 2, [0xE9: AM.IMMEDIATE], (CPU c){ c.sbcI(); });
-    tmp.makeVariants("SBC", 2, [
+    tmp.makeVariants("RTI", OpClass.CONTROL, 6, [0x40: AM.IMPLIED], (CPU c){ c.rti(); });
+    tmp.makeVariants("RTS", OpClass.CONTROL, 6, [0x60: AM.IMPLIED], (CPU c){ c.rts(); });
+    tmp.makeVariants("SBC", OpClass.READ, 2, [0xE9: AM.IMMEDIATE], (CPU c){ c.sbcI(); });
+    tmp.makeVariants("SBC", OpClass.READ, 2, [
         0xE5: AM.ZP_IMMEDIATE,
         0xF5: AM.ZP_X,
         0xED: AM.ABSOLUTE,
@@ -333,10 +342,10 @@ shared static this() {
         0xE1: AM.INDEXED_INDIRECT,
         0xF1: AM.INDIRECT_INDEXED,
     ], (CPU c){ c.sbcM(); });
-    tmp.makeVariants("SEC", 2, [0x38: AM.IMPLIED], (CPU c){ c.sec(); });
-    tmp.makeVariants("SED", 2, [0xF8: AM.IMPLIED], (CPU c){ c.sed(); });
-    tmp.makeVariants("SEI", 2, [0x78: AM.IMPLIED], (CPU c){ c.sei(); });
-    tmp.makeVariants("STA", 3, [
+    tmp.makeVariants("SEC", OpClass.CONTROL, 2, [0x38: AM.IMPLIED], (CPU c){ c.sec(); });
+    tmp.makeVariants("SED", OpClass.CONTROL, 2, [0xF8: AM.IMPLIED], (CPU c){ c.sed(); });
+    tmp.makeVariants("SEI", OpClass.CONTROL, 2, [0x78: AM.IMPLIED], (CPU c){ c.sei(); });
+    tmp.makeVariants("STA", OpClass.WRITE, 3, [
         0x85: AM.ZP_IMMEDIATE,
         0x95: AM.ZP_X,
         0x8D: AM.ABSOLUTE,
@@ -345,28 +354,26 @@ shared static this() {
         0x81: AM.INDEXED_INDIRECT,
         0x91: AM.INDIRECT_INDEXED,
     ], (CPU c){ c.sta(); });
-    tmp.makeVariants("STX", 3, [
+    tmp.makeVariants("STX", OpClass.WRITE, 3, [
         0x86: AM.ZP_IMMEDIATE,
         0x96: AM.ZP_Y,
         0x8E: AM.ABSOLUTE,
     ], (CPU c){ c.stx(); });
-    tmp.makeVariants("STY", 3, [
+    tmp.makeVariants("STY", OpClass.WRITE, 3, [
         0x84: AM.ZP_IMMEDIATE,
         0x94: AM.ZP_X,
         0x8C: AM.ABSOLUTE,
     ], (CPU c){ c.sty(); });
-    tmp.makeVariants("TAX", 2, [0xAA: AM.IMPLIED], (CPU c){ c.tax(); });
-    tmp.makeVariants("TAY", 2, [0xA8: AM.IMPLIED], (CPU c){ c.tay(); });
-    tmp.makeVariants("TSX", 2, [0xBA: AM.IMPLIED], (CPU c){ c.tsx(); });
-    tmp.makeVariants("TXA", 2, [0x8A: AM.IMPLIED], (CPU c){ c.txa(); });
-    tmp.makeVariants("TXS", 2, [0x9A: AM.IMPLIED], (CPU c){ c.txs(); });
-    tmp.makeVariants("TYA", 2, [0x98: AM.IMPLIED], (CPU c){ c.tya(); });
+    tmp.makeVariants("TAX", OpClass.CONTROL, 2, [0xAA: AM.IMPLIED], (CPU c){ c.tax(); });
+    tmp.makeVariants("TAY", OpClass.CONTROL, 2, [0xA8: AM.IMPLIED], (CPU c){ c.tay(); });
+    tmp.makeVariants("TSX", OpClass.CONTROL, 2, [0xBA: AM.IMPLIED], (CPU c){ c.tsx(); });
+    tmp.makeVariants("TXA", OpClass.CONTROL, 2, [0x8A: AM.IMPLIED], (CPU c){ c.txa(); });
+    tmp.makeVariants("TXS", OpClass.CONTROL, 2, [0x9A: AM.IMPLIED], (CPU c){ c.txs(); });
+    tmp.makeVariants("TYA", OpClass.CONTROL, 2, [0x98: AM.IMPLIED], (CPU c){ c.tya(); });
 
     // 'illegal' opcodes
-    // Illegal variants of NOP
-    tmp.makeVariants("NOP", 1, [
-        0x80: AM.IMMEDIATE,
-        0x82: AM.IMMEDIATE,
+    // Illegal variants of NOP that require the extra tick
+    tmp.makeVariants("NOP", OpClass.CONTROL, 2, [
         0x04: AM.ZP_IMMEDIATE,
         0x14: AM.ZP_X,
         0x34: AM.ZP_X,
@@ -383,6 +390,11 @@ shared static this() {
         0x7A: AM.IMPLIED,
         0xDA: AM.IMPLIED,
         0xFA: AM.IMPLIED,
+        0xC2: AM.IMMEDIATE,
+        0xE2: AM.IMMEDIATE,
+    ], (CPU c){ c.nop!true(); }, true);
+    // Illegal variants of NOP that require an extra tick AND overridden opclass
+    tmp.makeVariants("NOP", OpClass.READ, 1, [
         0x0C: AM.ABSOLUTE,
         0x1C: AM.ABSOLUTE_X,
         0x3C: AM.ABSOLUTE_X,
@@ -390,13 +402,16 @@ shared static this() {
         0x7C: AM.ABSOLUTE_X,
         0xDC: AM.ABSOLUTE_X,
         0xFC: AM.ABSOLUTE_X,
-        0xC2: AM.IMMEDIATE,
-        0xE2: AM.IMMEDIATE,
+    ], (CPU c){ c.nop!true(); }, true);
+    // Illegal variants of NOP that don't require an extra tick
+    tmp.makeVariants("NOP", OpClass.READ, 2, [
+        0x80: AM.IMMEDIATE,
+        0x82: AM.IMMEDIATE,
     ], (CPU c){ c.nop(); }, true);
     // TODO: Verify correct cycle counts for illegal
     // variants of NOP
     // opcodes that will 'KIL(l)' / jam the CPU
-    tmp.makeVariants("KIL", 0, [
+    tmp.makeVariants("KIL", OpClass.CONTROL, 0, [
         0x02: AM.IMPLIED,
         0x12: AM.IMPLIED,
         0x22: AM.IMPLIED,
@@ -411,7 +426,7 @@ shared static this() {
         0xF2: AM.IMPLIED,
     ], null, true);
     // SLO = ASL + ORA
-    tmp.makeVariants("SLO", 3, [
+    tmp.makeVariants("SLO", OpClass.RMW, 3, [
         0x07: AM.ZP_IMMEDIATE,
         0x17: AM.ZP_X,
         0x03: AM.INDEXED_INDIRECT,
@@ -421,7 +436,7 @@ shared static this() {
         0x1B: AM.ABSOLUTE_Y,
     ], (CPU c){ c.slo(); }, true);
     // RLA = ROL + AND
-    tmp.makeVariants("RLA", 2, [
+    tmp.makeVariants("RLA", OpClass.RMW, 2, [
         0x27: AM.ZP_IMMEDIATE,
         0x37: AM.ZP_X,
         0x23: AM.INDEXED_INDIRECT,
@@ -431,7 +446,7 @@ shared static this() {
         0x3B: AM.ABSOLUTE_Y,
     ], (CPU c){ c.rla(); }, true);
     // SRE = LSR + EOR
-    tmp.makeVariants("SRE", 2, [
+    tmp.makeVariants("SRE", OpClass.RMW, 2, [
         0x47: AM.ZP_IMMEDIATE,
         0x57: AM.ZP_X,
         0x43: AM.INDEXED_INDIRECT,
@@ -441,7 +456,7 @@ shared static this() {
         0x5B: AM.ABSOLUTE_Y,
     ], (CPU c){ c.sre(); }, true);
     // RRA = ROR + ADC
-    tmp.makeVariants("RRA", 2, [
+    tmp.makeVariants("RRA", OpClass.RMW, 2, [
         0x67: AM.ZP_IMMEDIATE,
         0x77: AM.ZP_X,
         0x63: AM.INDEXED_INDIRECT,
@@ -451,14 +466,14 @@ shared static this() {
         0x7B: AM.ABSOLUTE_Y,
     ], (CPU c){ c.rra(); }, true);
     // SAX = 'Store A&X into {adr}'
-    tmp.makeVariants("SAX", 3, [
+    tmp.makeVariants("SAX", OpClass.WRITE, 3, [
         0x87: AM.ZP_IMMEDIATE,
         0x97: AM.ZP_Y,
         0x83: AM.INDEXED_INDIRECT,
         0x8F: AM.ABSOLUTE,
     ], (CPU c){ c.sax(); }, true);
     // LAX = LDA + LDX
-    tmp.makeVariants("LAX", 3, [
+    tmp.makeVariants("LAX", OpClass.READ, 3, [
         0xA7: AM.ZP_IMMEDIATE,
         0xB7: AM.ZP_Y,
         0xA3: AM.INDEXED_INDIRECT,
@@ -467,7 +482,7 @@ shared static this() {
         0xBF: AM.ABSOLUTE_Y,
     ], (CPU c){ c.lax(); }, true);
     // DCP = DEC + CMP
-    tmp.makeVariants("DCP", 3, [
+    tmp.makeVariants("DCP", OpClass.RMW, 3, [
         0xC7: AM.ZP_IMMEDIATE,
         0xD7: AM.ZP_X,
         0xC3: AM.INDEXED_INDIRECT,
@@ -477,7 +492,7 @@ shared static this() {
         0xDB: AM.ABSOLUTE_Y,
     ], (CPU c){ c.dcp(); }, true);
     // ISC = INC + SBC
-    tmp.makeVariants("ISC", 3, [
+    tmp.makeVariants("ISC", OpClass.RMW, 3, [
         0xE7: AM.ZP_IMMEDIATE,
         0xF7: AM.ZP_X,
         0xE3: AM.INDEXED_INDIRECT,
@@ -487,35 +502,35 @@ shared static this() {
         0xFB: AM.ABSOLUTE_Y,
     ], (CPU c){ c.isc(); }, true);
     // ANC = AND (#imm) + ASL
-    tmp.makeVariants("ANC", 3, [
+    tmp.makeVariants("ANC", OpClass.READ, 3, [
         0x0B: AM.IMMEDIATE,
         0x2B: AM.IMMEDIATE,
     ], null, true);
     // ALR = AND + LSR
-    tmp.makeVariants("ALR", 3, [0x4B: AM.IMMEDIATE], null, true);
+    tmp.makeVariants("ALR", OpClass.READ, 3, [0x4B: AM.IMMEDIATE], null, true);
     // ARR = AND + ROR
-    tmp.makeVariants("ARR", 3, [0x6B: AM.IMMEDIATE], null, true);
+    tmp.makeVariants("ARR", OpClass.READ, 3, [0x6B: AM.IMMEDIATE], null, true);
     // XAA = TXA + AND(#imm) -- highly unstable
-    tmp.makeVariants("XAA", 3, [0x8B: AM.IMMEDIATE], null, true);
+    tmp.makeVariants("XAA", OpClass.READ, 3, [0x8B: AM.IMMEDIATE], null, true);
     // LAX = LDA(#imm) + TAX -- highly unstable
-    tmp.makeVariants("LAX", 3, [0xAB: AM.IMMEDIATE], null, true);
+    tmp.makeVariants("LAX", OpClass.READ, 3, [0xAB: AM.IMMEDIATE], null, true);
     // AXS = A&X minus #imm into X
-    tmp.makeVariants("AXS", 3, [0xCB: AM.IMMEDIATE], null, true);
+    tmp.makeVariants("AXS", OpClass.READ, 3, [0xCB: AM.IMMEDIATE], null, true);
     // SBC -- illegal variant of legal opcode (?)
-    tmp.makeVariants("SBC", 3, [0xEB: AM.IMMEDIATE], (CPU c){ c.sbcI(); }, true);
+    tmp.makeVariants("SBC", OpClass.READ, 3, [0xEB: AM.IMMEDIATE], (CPU c){ c.sbcI(); }, true);
     // AHX = Store A&X&H into {adr} -- conditionally unstable
-    tmp.makeVariants("AHX", 3, [
+    tmp.makeVariants("AHX", OpClass.WRITE, 3, [
         0x93: AM.INDIRECT_INDEXED,
         0x9F: AM.ABSOLUTE_Y,
     ], null, true);
     // SHY = stores Y&H into {adr} -- conditionally unstable
-    tmp.makeVariants("SHY", 3, [0x9C: AM.ABSOLUTE_X], null, true);
+    tmp.makeVariants("SHY", OpClass.WRITE, 3, [0x9C: AM.ABSOLUTE_X], null, true);
     // SHX = stores X&H into {adr} -- conditionally unstable
-    tmp.makeVariants("SHX", 3, [0x9E: AM.ABSOLUTE_Y], null, true);
+    tmp.makeVariants("SHX", OpClass.WRITE, 3, [0x9E: AM.ABSOLUTE_Y], null, true);
     // TAS = stores A&X into S and A&X&H into {adr} -- conditionally unstable
-    tmp.makeVariants("TAS", 3, [0x9B: AM.ABSOLUTE_Y], null, true);
+    tmp.makeVariants("TAS", OpClass.WRITE, 3, [0x9B: AM.ABSOLUTE_Y], null, true);
     // LAS = stores {adr}&S into A, X, and S
-    tmp.makeVariants("LAS", 3, [0xBB: AM.ABSOLUTE_Y], null, true);
+    tmp.makeVariants("LAS", OpClass.WRITE, 3, [0xBB: AM.ABSOLUTE_Y], null, true);
 
     // Make some assertions about the opcode table
     foreach(i, opdef; tmp) {
@@ -565,8 +580,8 @@ class CPU {
 
         // Read the reset vector from ROM
         ubyte lo, hi;
-        lo = readBus(CPU_RESET_VECTOR);
-        hi = readBus(CPU_RESET_VECTOR+1);
+        lo = readBus!(false,false)(CPU_RESET_VECTOR);
+        hi = readBus!(false,false)(CPU_RESET_VECTOR+1);
 
         // Reset tickCounter
         tickCounter = 0;
@@ -583,10 +598,12 @@ class CPU {
         internalRAM[address & CPU_RAM_MASK] = value;
     }
 
-    void doTick() {
+    bool doTick() {
         if(currentState.state == Fiber.State.TERM)
             currentState.reset();
         currentState.call();
+        // Return true if this tick ended a complete instruction
+        return currentState.state == Fiber.State.TERM;
     }
 
     void tick(bool yield=true)() {
@@ -603,12 +620,13 @@ class CPU {
     }
 
     debug ubyte[] opBuffer = [];
+    debug uint startingTicks;
 
     void step() {
         // The one common cycle / tick operation at the beginning of every instruction
         // is to read opcode and increment PC. From there, behavior depends on the opcode
         // and address mode.
-        debug auto startingTicks = tickCounter;
+        debug startingTicks = tickCounter;
         debug addr originalPC = regs.PC;
         debug opBuffer.length = 0;
 
@@ -671,17 +689,17 @@ class CPU {
                 break;
 
             case AddressMode.ABSOLUTE:
-                prepareAbsolute();
+                prepareAbsolute!false(opdef.opclass);
                 opdef.handler(this);
                 break;
 
             case AddressMode.ABSOLUTE_X:
-                prepareAbsolute(regs.X);
+                prepareAbsolute!true(opdef.opclass, regs.X);
                 opdef.handler(this);
                 break;
 
             case AddressMode.ABSOLUTE_Y:
-                prepareAbsolute(regs.Y);
+                prepareAbsolute!true(opdef.opclass, regs.Y);
                 opdef.handler(this);
                 break;
 
@@ -691,7 +709,7 @@ class CPU {
                 break;
 
             case AddressMode.INDIRECT_INDEXED:
-                prepareIndirectIndexed();
+                prepareIndirectIndexed(opdef.opclass);
                 opdef.handler(this);
                 break;
 
@@ -706,8 +724,16 @@ class CPU {
             auto totalTicks = endingTicks-startingTicks;
             auto lines = disassemble(opBuffer, originalPC);
             assert(lines.length == 1, format("Expected lines.length = 1, got %d\nLines: %s", lines.length, lines));
-            writefln("%-30s\tA:%02X X:%02X Y:%02X P:%s SP:%02X CYC:%d TCYC:%d INT:%s", lines[0], regs.A, regs.X, regs.Y, regs.P, regs.S, totalTicks, tickCounter, inInterrupt);
+            writefln("%-48s%s", lines[0], getStatusString());
         }
+    }
+
+    string getRegsStatusString() {
+        return format("A:%02X X:%02X Y:%02X P:%02X SP:%02X", regs.A, regs.X, regs.Y, regs.P.P, regs.S);
+    }
+
+    string getStatusString() {
+        return format("%-48s%s", disassemblePC(), getRegsStatusString());
     }
 
     /// Read a byte from PC, increment PC, and incur a(n optionally
@@ -728,6 +754,7 @@ class CPU {
     /// Prepapre for an Absolute Indirect operation by resolving target address to addrLine
     void prepareAbsoluteIndirect() {
         ubyte lo, hi;
+        // Read in the pointer to the effective address from PC
         lo = readPC();
         hi = readPC();
         // Assemble the pointer to effective address
@@ -768,7 +795,7 @@ class CPU {
     }
 
     /// Prepare for an indirect indexed operation by resolving the address on addrLine
-    void prepareIndirectIndexed() {
+    void prepareIndirectIndexed(OpClass cls) {
         ubyte lo, hi;
         // Read the zero-page address of pointer to effective address
         addrLine = readPC();
@@ -778,12 +805,24 @@ class CPU {
         hi = readBus(addrLine & 0xFF);
         // Add Y to the effective address, incur a tick during ALU operation
         addr tmp = cast(addr)((lo + regs.Y) & 0xFFFF);
-        tick();
-        // If the sum overflowed, incur an 'oops' cycle to correct the address
+        //tick();
+
+        bool oops = false;
+        // If the sum overflowed, potentially incur an 'oops' cycle to correct the address (for READ instructions)
         if(tmp > 0xFF) {
             hi++;
+            oops = true;
+        }
+
+        // Only for READ instructions, is the oops cycle conditional -- for RMW / W, it's unconditional
+        // (and for control, it is skipped)
+        if(cls == OpClass.READ) {
+            if(oops)
+                tick();
+        } else if(cls == OpClass.RMW || cls == OpClass.WRITE) {
             tick();
         }
+
         // Mask the summed low address byte in case it overflowed (see above)
         lo = ub(tmp);
         addrLine = makeAddr(lo, hi);
@@ -804,19 +843,33 @@ class CPU {
     }
 
     /// Prepare for an absolute operation by resolving the address on addrLine
-    void prepareAbsolute(ubyte index=0) {
+    void prepareAbsolute(bool indexed)(OpClass cls, ubyte index=0) {
         ubyte lo, hi;
         lo = readPC();
         hi = readPC();
-        addr tmp = cast(addr)((lo + index) & 0xFFFF);
-        if(tmp > 0xFF) {
-            // 'oops' - page boundary crossed, fix the high byte and incur an extra tick
-            // due to ALU operation
-            ++hi;
-            tick();
+        static if(indexed) {
+            addr tmp = cast(addr)((lo + index) & 0xFFFF);
+
+            bool oops = false;
+            if(tmp > 0xFF) {
+                // 'oops' - page boundary crossed, fix the high byte and incur an extra tick
+                // due to ALU operation
+                ++hi;
+                oops = true;
+            }
+
+            // Only for READ instructions, is the oops cycle conditional -- for RMW / W, it's unconditional
+            // (and for control, it is skipped)
+            if(cls == OpClass.READ) {
+                if(oops)
+                    tick();
+            } else if(cls == OpClass.RMW || cls == OpClass.WRITE) {
+                tick();
+            }
+
+            // mask the sum of lo + index in case it overflowed
+            lo = ub(tmp);
         }
-        // mask the sum of lo + index in case it overflowed
-        lo = ub(tmp);
         addrLine = makeAddr(lo, hi);
     }
 
@@ -1448,6 +1501,7 @@ class CPU {
 
         // There appears to be some kind of dummy operation during JSR that incurs
         // an extra tick (#3)
+
         tick();
         // JSR (when invoked by interpreter) is unique -- it doesn't actually advance
         // PC when reading the high byte of the target address in absolute mode, but
@@ -1458,7 +1512,10 @@ class CPU {
         // we can attempt to compromise on accuracy and 'fudge' it by simply decrementing
         // PC here (and incrementing it during RTS)
         --regs.PC;
-        jsr(addrLine);
+        pushStack(regs.PCH);
+        pushStack(regs.PCL);
+        jmp(addrLine);
+        //jsr(addrLine);
     }
 
     // TODO: Unit test JSR
@@ -1529,6 +1586,8 @@ class CPU {
     /// LSR on Accmulator
     void lsrA() {
         regs.A = lsr(regs.A);
+        // ALU operation incurs a tick
+        tick();
     }
 
     /// LSR on memory address
@@ -1560,10 +1619,14 @@ class CPU {
     }
 
     /// NOP -- No OPeration
-    void nop() {
+    void nop(bool doTick=false)() {
         // do nothing!
-        // but incur a tick
-        tick();
+        // but incur a tick (pending template argument) --
+        // the 'official' NOP (0xEA) is an implied mode op, so the manual tick here is necessary --
+        // but all the 'unofficial' NOPs use other address modes, in which case no extra tick
+        // should be performed, since processing the address mode will tick for us.
+        static if(doTick)
+            tick();
     }
 
     /// ORA -- logical inclusive OR of Accumulator (implementation)
@@ -1653,6 +1716,8 @@ class CPU {
         ubyte value = readBus(addrLine);
         ubyte result = rol(value);
         and(result);
+        // Operation incurs an extra tick during ALU ops / premature write
+        tick();
         writeBus(addrLine, result);
     }
 
@@ -1771,9 +1836,9 @@ class CPU {
         // Another tick incurred while incrementing S (#3), but we do it at the same time in
         // popStack, so just add another tick here
         tick();
-        regs.P.P = popStack();
-        // Clear the Break flag if it was set
-        regs.P.B = false;
+        // Pop status flags off stack, ensuring that B flag is always clear, and R flag
+        // is always set.
+        regs.P.P = (popStack() & ~ProcessorStatus.Flags.BREAK) | ProcessorStatus.Flags.RESERVED;
         regs.PCL = popStack();
         regs.PCH = popStack();
         inInterrupt = false;
@@ -1951,6 +2016,20 @@ class CPU {
         tick();
     }
 
+    string disassemblePC() {
+        ubyte opcode = readBus!(false,false)(regs.PC);
+        auto opdef = lookupOpcode(opcode);
+        auto opBytes = getOpcodeSize(opdef.mode);
+        ubyte[] instr = [opcode];
+        if(opBytes > 1)
+            instr ~= readBus!(false,false)((regs.PC+1) & 0xFFFF);
+        if(opBytes > 2)
+            instr ~= readBus!(false,false)((regs.PC+2) & 0xFFFF);
+        string[] lines = disassemble(instr, regs.PC);
+        assert(lines.length == 1);
+        return lines[0];
+    }
+
     static string[] disassemble(in ubyte[] prg, in addr baseAddr = 0) {
         string[] result = [];
         addr offset = baseAddr;
@@ -1966,9 +2045,6 @@ class CPU {
                 arg += (*i++ << 8) & 0xFF00;
             auto line = disassembleLine(opdef, arg, offset);
             offset += argBytes;
-            //debug(verbose) writefln("Line: %s", line);
-            //debug writefln("Opdef: %s", opdef);
-            //put(result, line);
             result ~= line;
         }
         return result;
@@ -1977,7 +2053,7 @@ class CPU {
     pure static string formatDisassemblyLine(in addr offset, in ubyte[] rawBytes, in string mnemonic, in string operands, bool illegal=false) {
         string bytecode = rawBytes.map!((ubyte x){ return format("%02X",x);} ).join(" ");
         char indicator = (illegal ? '*' : ' ');
-        return format("%04X  %-10s%c%s %s", offset, bytecode, indicator, mnemonic, operands).strip();
+        return format("%04X  %-10s%c%s %-32s", offset, bytecode, indicator, mnemonic, operands).strip();
     }
 
     static string disassembleLine(in OpCodeDef opdef, in ushort arg, in addr offset) {
@@ -1998,7 +2074,7 @@ class CPU {
                 operands = "A";
                 break;
             case AddressMode.IMMEDIATE:
-                operands = format("$#%02X", ub(arg));
+                operands = format("#$%02X", ub(arg));
                 break;
             case AddressMode.RELATIVE:
                 operands = format("%+d", cast(byte)(arg & 0xFF));
@@ -2025,7 +2101,7 @@ class CPU {
                 operands = format("($%02X,X)", ub(arg));
                 break;
             case AddressMode.INDIRECT_INDEXED:
-                operands = format("($%02X,Y)", ub(arg));
+                operands = format("($%02X),Y", ub(arg));
                 break;
             case AddressMode.INDIRECT:
                 operands = format("($%04X)", arg);

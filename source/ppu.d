@@ -365,6 +365,13 @@ public:
         return frameListeners.linearRemoveElement(listener);
     }
 
+    void reset() {
+        cycle = 0;
+        scanline = 0;
+        mask.value = 0;
+        ctrl.value = 0;
+    }
+
     /// Read internal VRAM. `offset` is relative / local to the VRAM buffer, and
     /// out-of-bounds addresses will be wrapped automatically.
     ubyte readVRAM(const addr offset) {
@@ -606,8 +613,8 @@ public:
     void renderPixel() {
         assert(scanline >= 0 && scanline < NTSC_SCREEN_H && cycle >= 1 && cycle <= NTSC_SCREEN_W, "Pixel out of bounds");
 
-        ubyte bgPixel = (mask.bgEnabled ? calcCurrentBgPixel() : 0);
-        ubyte spritePixel = (mask.spritesEnabled ? calcCurrentSpritePixel() : 0);
+        ubyte bgPixel = calcCurrentBgPixel();
+        ubyte spritePixel = calcCurrentSpritePixel();
         bool bgPresent = (bgPixel & 0x03) != 0;
         bool spritePresent = (spritePixel & 0x03) != 0;
         uint bgPalette = (bgPixel >> 2) & 0x03;
@@ -624,7 +631,7 @@ public:
             result = spritePalettes[spritePalette][spritePixel & 0x03];
         } else if(bgPresent && spritePresent) {
             // Both bg and sprite pixels are opaque, sprite priority determines
-            // which pixel is rendered (0/false = sprite shown, 1/true = background dhown)
+            // which pixel is rendered (0/false = sprite shown, 1/true = background shown)
             bool spritePriority = (spritePixel & 0x10) > 0;
             result = (spritePriority ? bgPalettes[bgPalette][bgPixel & 0x03] : spritePalettes[spritePalette][spritePixel & 0x03]);
 
@@ -851,7 +858,10 @@ public:
         if(isVisibleScanline || isPreRenderScanline) {
             auto subCycle = cycle & 7;
             // On cycles 9, 17, 25, ..., 257: Shift registers are updated from latches
-            if(cycle >= 9 && cycle <= 257 && subCycle == 1)
+            // ^ missing the HBLANK updates @ 329 + 337!
+            if(subCycle == 1 &&
+                ((cycle >= 9 && cycle <= 257) ||
+                (cycle >= 329 && cycle <= 337)))
                 updateBgShiftRegisters();
 
             // On cycles of visible pixels AND during the last ~20 cycles of HBlank
@@ -1087,16 +1097,6 @@ public:
         atbLatches[0] = attbBits & 1;
     }
 
-    ubyte calcCurrentAttrib() {
-        // Y coordinate selects nibble, X coordinate selects half-nibble
-        ubyte result = attbBufferLatch;
-        if(vPtr.coarseY & 1)
-            result >>= 4;
-        if(vPtr.coarseX & 1)
-            result >>= 2;
-        return result;
-    }
-
     void updateSpriteShiftRegisters() {
         for(int i = 0; i < SECONDARY_OAM_ENTRIES; i++) {
             // Active sprites have their pattern shift registers shifted once
@@ -1116,6 +1116,7 @@ public:
     addr getCurrentTileAddr() {
         // upper 4(2)  bits of vPtr address are fixed to 0x2000, vPtr is masked to lower
         // 12 bits (= 14 bit address into CHR nametable)
+        // See: https://www.nesdev.org/wiki/PPU_scrolling#Tile_and_attribute_fetching
         return PPU_NAMETABLE_OFFSETS[0] | (vPtr.raw & 0x0FFF);
     }
 
@@ -1123,7 +1124,29 @@ public:
         // upper 3 bits of vPtr address are fixed to 0x2000, add 960 byte offset (=0x23C0)
         // for the attribute table that follows a nametable,
         // nametable select bits at 15-14, and high 3 bits each of coarseX and coarseY
+        // See: https://www.nesdev.org/wiki/PPU_scrolling#Tile_and_attribute_fetching
         return PPU_ATTR_TABLE_OFFSET | (vPtr.raw & 0x0C00) | ((vPtr.raw >> 4) & 0x38) | ((vPtr.raw >> 2) & 0x07);
+    }
+
+    ubyte calcCurrentAttrib() {
+        // Since a single attribute byte controls 4x4 tiles (32x32 pixels), the attribyte byte is bit-packed
+        // with 4x half-nibble (2-bit) entries, where each entry controls 2x2 tiles (16x16 pixels).
+        // From LSB -> MSB, the order is: Top left, Top Right, Bottom left, Bottom right
+        /*
+            For reference, from: https://www.nesdev.org/wiki/PPU_attribute_tables
+            7654 3210
+            |||| ||++- Color bits 3-2 for top left quadrant of this byte
+            |||| ++--- Color bits 3-2 for top right quadrant of this byte
+            ||++------ Color bits 3-2 for bottom left quadrant of this byte
+            ++-------- Color bits 3-2 for bottom right quadrant of this byte
+         */
+        // Y coordinate selects nibble, X coordinate selects half-nibble
+        ubyte result = attbBufferLatch;
+        if(vPtr.coarseY & 2)
+            result >>= 4;
+        if(vPtr.coarseX & 2)
+            result >>= 2;
+        return result & 0x03;
     }
 
     ubyte readPatternTileByte(ubyte tileNo, ubyte table, ubyte fineY, bool highByte) {

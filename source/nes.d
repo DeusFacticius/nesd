@@ -3,7 +3,8 @@ module nes;
 // Master / facade / mediator for the aggregate of individual
 // NES components
 
-import std.stdio;
+debug import std.stdio;
+debug import std.format;
 import ppu;
 import cpu;
 import cpu_bus;
@@ -70,7 +71,7 @@ class NES {
     void reset() {
         tickCounter = 0;
         cpu.reset();
-        // TODO: reset PPU
+        ppu.reset();
     }
 
     void tick() {
@@ -94,6 +95,20 @@ class NES {
         tickCounter += NES_CPU_CLOCK_DIVIDER;
     }
 
+    void cpuStep() {
+        // Another alternative progression mechanism --
+        // Tick cpu & ppu in sync until CPU has completed
+        // an instruction, as indicated by response from cpu.doTick()
+        bool cpuInstructionFinished = false;
+        do {
+            cpuInstructionFinished = cpu.doTick();
+            ppu.doTick();
+            ppu.doTick();
+            ppu.doTick();
+            tickCounter += NES_CPU_CLOCK_DIVIDER;
+        }while(!cpuInstructionFinished);
+    }
+
     void altTick2() {
         // Another, ideally faster tick mechanism --
         // Tick for a full PPU frame
@@ -101,6 +116,12 @@ class NES {
         while(frameCounter == ppu.frameCounter) {
             altTick();
         }
+    }
+
+    debug string buildTraceLine() {
+        string cpuTrace = cpu.getStatusString();
+        cpuTrace ~= format(" PPU:%3d,%3d CYC:%d",ppu.scanline, ppu.cycle, cpu.tickCounter);
+        return cpuTrace;
     }
 }
 
@@ -124,4 +145,34 @@ unittest {
     writefln("NES Ticks:%d\tCPU Ticks: %d\tPPU Ticks: %d", nes.tickCounter, nes.cpu.tickCounter, nes.ppu.tickCounter);
     expect(nes.cpu.tickCounter).to.equal(N / NES_CPU_CLOCK_DIVIDER);
     expect(nes.ppu.tickCounter).to.equal(N / NES_NTSC_PPU_CLOCK_DIVIDER);
+}
+
+@("auto_nestest")
+unittest {
+    import fluentasserts.core.expect;
+    auto nes = new NES();
+    auto rom = new NESFile("nestest.nes");
+    nes.insertCartridge(rom);
+
+    // Set to a defined state
+    nes.cpu.regs.PC = 0xC000;
+    nes.cpu.regs.P.P = 0x24;
+    nes.cpu.regs.S = 0xFD;
+    // starting at CPU cycle 4 (12*4 = 48 master clock cycles)
+    nes.cpu.tickCounter = 7;
+    nes.tickCounter = nes.cpu.tickCounter*NES_CPU_CLOCK_DIVIDER;
+    // = 12 PPU cycles
+    foreach(i; 0..(3*nes.cpu.tickCounter))
+        nes.ppu.doTick();
+
+    auto f = File("auto_nestest.log", "wb");
+    scope(exit) f.close();
+    // Run ~ 100 cpu instructions
+    immutable auto CPU_INSTRUCTIONS = 8991;
+    foreach(i; 0..CPU_INSTRUCTIONS) {
+        string line = nes.buildTraceLine();
+        writeln(line);
+        f.writeln(line);
+        nes.cpuStep();
+    }
 }
