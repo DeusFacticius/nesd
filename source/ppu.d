@@ -386,7 +386,7 @@ public:
     /// palette or mirrors range ($3F00-$3FFF)
     ubyte readWritePalettes(bool write)(addr address, const ubyte value=0) {
         // Assert the address is in expected range
-        assert(address >= PPU_PALETTES_START && address < PPU_PALETTES_MIRRORS_END);
+        assert(address >= PPU_PALETTES_START && address <= PPU_PALETTES_MIRRORS_END);
         // only the low 5 bits matter
         address &= 0x1F;
         // low 2 bits indicates index within the palette
