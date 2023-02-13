@@ -72,10 +72,10 @@ class NROMMapper : Mapper {
     this(NESFile file, PPU ppu) {
         // Ensure the rom has at least 1 CHR ROM bank, NROM does not have a bank
         // switching mechanism and CHR RAM not yet supported
-        assert(file.chrRomBanks.length >= 1);
+        //assert(file.chrRomBanks.length >= 1, "Expected 1 or more CHR ROM banks");
         // Ensure the ROM has at least 1 (and not more than 2) PRG ROM bank(s)
         // NROM does not have a bank switching mechanism
-        assert(file.prgRomBanks.length >= 1 && file.prgRomBanks.length <= 2);
+        assert(file.prgRomBanks.length >= 1 && file.prgRomBanks.length <= 2, "Expected [1,2] PRG ROM banks");
         this.nesFile = file;
         this.ppu = ppu;
         auto prgRAMSize = (nesFile.header.prgRAMSize == 0 ? 8192 : nesFile.header.prgRAMSize);
@@ -115,7 +115,12 @@ class NROMMapper : Mapper {
                 } else {
                     // NROM does not have a bank switching mechanism for multiple
                     // CHR ROM banks, assume first is only active bank
-                    return nesFile.chrRomBanks[0][(address & 0x1FFF)];
+                    if(nesFile.chrRomBanks.length > 0)
+                        return nesFile.chrRomBanks[0][(address & 0x1FFF)];
+                    else {
+                        debug writefln("[MAPPER] Attempted to read CHR ROM @ $%04X, but ROM has no CHR ROM banks!", address);
+                        return (address & 0xFF);
+                    }
                 }
 
             case 0x20: .. case 0x2F:
