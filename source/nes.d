@@ -88,8 +88,8 @@ class NES {
         // tick, instead just run: 1x CPU tick, 3X PPU ticks,
         // and add 12 ticks to counter (e.g. skip ticks that do
         // nothing but increment counter
-        cpu.doTick();
         ppu.doTick();
+        cpu.doTick();
         ppu.doTick();
         ppu.doTick();
         tickCounter += NES_CPU_CLOCK_DIVIDER;
@@ -101,8 +101,8 @@ class NES {
         // an instruction, as indicated by response from cpu.doTick()
         bool cpuInstructionFinished = false;
         do {
-            cpuInstructionFinished = cpu.doTick();
             ppu.doTick();
+            cpuInstructionFinished = cpu.doTick();
             ppu.doTick();
             ppu.doTick();
             tickCounter += NES_CPU_CLOCK_DIVIDER;
