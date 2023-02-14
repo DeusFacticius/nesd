@@ -391,17 +391,14 @@ public:
         address &= 0x1F;
         // low 2 bits indicates index within the palette
         auto entryIdx = address & 0x03;
-        // the first entry in every palette (except the first) are actually all mirrors
-        // of the first entry in the first palette, which is the universal backdrop color
-        //if(entryIdx == 0) {
-        //    static if(write) {
-        //        debug(verbose) writefln("Writing universal bg color: %02X", (value & 0x0F));
-        //        bgPalettes[0][0].packed = (value & 0x3F);
-        //        return value;
-        //    } else {
-        //        return (bgPalettes[0][0].packed & 0x3F);
-        //    }
-        //}
+        // the first entry in every BG palette (except the first) is read/writable, however cannot actually be used --
+        // no matter what palette (even sprite palettes), pixel colors that map to 0 (the first entry in a palette) are
+        // instead always rendered using the universal backdrop color at $3F00 (first entry of first palette).
+
+        // Sprite palettes also have this quirk, however the first entry in every spite palette is actually a mirror
+        // of the corresponding background palettes first entry -- e.g. $3F10 is a mirror of $3F00, $3F14 is a mirror of
+        // $3F04, and so on.
+
         // bits 2-3 determine which palette
         auto paletteIdx = (address >> 2) & 0x03;
         // bit 4 determines whether its background or sprite palette, unless
@@ -871,7 +868,7 @@ public:
                     nametableBufferLatch = readBus(getCurrentTileAddr());
                 } else if(subCycle == 4) {
                     // On every 8th+4 cycle, attribute is fetched
-                    attbBufferLatch = readBus(getCurrentAttrAddr());
+                    attbBufferLatch = calcCurrentAttrib(readBus(getCurrentAttrAddr()));
                 } else if(subCycle == 6) {
                     // On every 8th+6 cycle, the low byte of the pattern is fetched
                     // Not found in documentation anywhere -- but I suspect the bits
@@ -1088,13 +1085,8 @@ public:
         ptrnShiftRegisters[1] = ((ptrnLatches[1] << 8) & 0xFF00) | (ptrnShiftRegisters[1]&0xFF);
         ptrnShiftRegisters[0] = ((ptrnLatches[0] << 8) & 0xFF00) | (ptrnShiftRegisters[0]&0xFF);
         // likewise copy the contents of the attribute buffer latch bits into the 1-bit feeder latches
-        // TODO: The two bits of atbBufferLatch chosen to fill atbLatches needs to be selected
-        // based on the tile row/col
-        //atbLatches[1] = (attbBufferLatch >> 1) & 0x01;
-        //atbLatches[0] = (attbBufferLatch & 0x01);
-        ubyte attbBits = calcCurrentAttrib();
-        atbLatches[1] = (attbBits >> 1) & 1;
-        atbLatches[0] = attbBits & 1;
+        atbLatches[1] = (attbBufferLatch >> 1) & 0x01;
+        atbLatches[0] = (attbBufferLatch & 0x01);
     }
 
     void updateSpriteShiftRegisters() {
@@ -1128,7 +1120,7 @@ public:
         return PPU_ATTR_TABLE_OFFSET | (vPtr.raw & 0x0C00) | ((vPtr.raw >> 4) & 0x38) | ((vPtr.raw >> 2) & 0x07);
     }
 
-    ubyte calcCurrentAttrib() {
+    ubyte calcCurrentAttrib(ubyte attb) {
         // Since a single attribute byte controls 4x4 tiles (32x32 pixels), the attribyte byte is bit-packed
         // with 4x half-nibble (2-bit) entries, where each entry controls 2x2 tiles (16x16 pixels).
         // From LSB -> MSB, the order is: Top left, Top Right, Bottom left, Bottom right
@@ -1141,7 +1133,7 @@ public:
             ++-------- Color bits 3-2 for bottom right quadrant of this byte
          */
         // Y coordinate selects nibble, X coordinate selects half-nibble
-        ubyte result = attbBufferLatch;
+        ubyte result = attb;
         if(vPtr.coarseY & 2)
             result >>= 4;
         if(vPtr.coarseX & 2)
