@@ -171,7 +171,7 @@ unittest {
     immutable auto CPU_INSTRUCTIONS = 8991;
     foreach(i; 0..CPU_INSTRUCTIONS) {
         string line = nes.buildTraceLine();
-        writeln(line);
+        //writeln(line);
         f.writeln(line);
         nes.cpuStep();
     }
