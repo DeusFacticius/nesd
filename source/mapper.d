@@ -69,6 +69,9 @@ class NROMMapper : Mapper {
     // For now -- provide 2KiB and mirror
     ubyte[] prgRAM;
 
+    alias ChrRamBank = ubyte[8192];
+    ChrRamBank chrRamBank;
+
     this(NESFile file, PPU ppu) {
         // Ensure the rom has at least 1 CHR ROM bank, NROM does not have a bank
         // switching mechanism and CHR RAM not yet supported
@@ -80,6 +83,10 @@ class NROMMapper : Mapper {
         this.ppu = ppu;
         auto prgRAMSize = (nesFile.header.prgRAMSize == 0 ? 8192 : nesFile.header.prgRAMSize);
         this.prgRAM = new ubyte[prgRAMSize];
+
+        // Copy the contents of CHR ROM to CHR RAM, if available
+        if(this.nesFile.chrRomBanks.length > 0)
+            this.chrRamBank[] = this.nesFile.chrRomBanks[0][];
     }
 
     override ubyte readPPU(addr address) {
@@ -107,19 +114,24 @@ class NROMMapper : Mapper {
             case 0x00: .. case 0x1F:
                 // pattern tables, aka CHR ROM (sometimes RAM)
                 static if(write) {
-                    // TODO: should this be allowed?
-                    //assert(false, "Attempted to write to pattern ROM!");
-                    debug writefln("[MAPPER] Attempted to write $%02X into pattern rom @ $%04X", value, address);
+                    // If the NES ROM file provided CHR ROM banks, assume this write was a mistake (?)
+                    if(nesFile.chrRomBanks.length > 0) {
+                        debug writefln("[MAPPER] Attempted to write $%02X into pattern rom @ $%04X", value, address);
+                    } else {
+                        // Otherwise, assume the cartridge expects (writable) CHR RAM to fill pattern space
+                        chrRamBank[(address & 0x1FFF)] = value;
+                    }
                     // vestigal return value
                     return value;
                 } else {
                     // NROM does not have a bank switching mechanism for multiple
-                    // CHR ROM banks, assume first is only active bank
+                    // CHR ROM banks, assume first is only active bank (if provided by ROM),
+                    // otherwise fall back to CHR RAM
+
                     if(nesFile.chrRomBanks.length > 0)
                         return nesFile.chrRomBanks[0][(address & 0x1FFF)];
                     else {
-                        debug writefln("[MAPPER] Attempted to read CHR ROM @ $%04X, but ROM has no CHR ROM banks!", address);
-                        return (address & 0xFF);
+                        return chrRamBank[(address & 0x1FFF)];
                     }
                 }
 
