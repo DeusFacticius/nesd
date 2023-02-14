@@ -70,8 +70,8 @@ static assert(ProcessorStatus.sizeof == ubyte.sizeof);
 
 unittest {
     ProcessorStatus p = ProcessorStatus(0xAA);
-    assert(p.N && p.B && p.D && p.Z);
-    assert(!(p.V || p.R || p.I || p.C));
+    assert(p.N && p.R && p.D && p.Z);
+    assert(!(p.V || p.B || p.I || p.C));
 }
 
 enum AddressMode {
