@@ -143,7 +143,7 @@ union NoiseCtrl3 {
         mixin(bitfields!(
             uint, "period", 4,
             uint, "unused", 3,
-            bool, "loop", 1,
+            bool, "loopMode", 1,
         ));
     }
 }
@@ -154,7 +154,7 @@ union NoiseCtrl4 {
     struct {
         mixin(bitfields!(
             uint, "unused", 3,
-            uint, "loopCounterLoad", 5,
+            uint, "lengthCounterLoad", 5,
         ));
     }
 }
@@ -565,11 +565,6 @@ class TriangleChannel : AbstractApuChannel {
     override ubyte getOutput() {
         // Triangle channel always outputs the current sequencer value --
         ubyte output = sequencer.getCurrent();
-        debug {
-            static int c = 0;
-            if (lengthCounter > 0 && c++ % 1000 == 0)
-                writefln("[TriangleChannel] Triangle output: %d", output);
-        }
         // Triangle channel can generate frequencies up to Fcpu/32 (~55.9kHz for NTSC), well above audible range (20kHz)
         // Although with perfect sampling rate these would be inaudible, the emulator itself runs slow and sampling
         // rate is kludged, so it results in a high pitched but audible whine. To save our ears (and speakers), we'll
@@ -611,6 +606,87 @@ class TriangleChannel : AbstractApuChannel {
         seqTimer.period = ((value.timerHigh << 8)  | (seqTimer.period & 0xFF)) & 0x07FF;
         lengthCounter = LENGTH_LUT[value.lengthCounterLoad];
         reload = true;
+    }
+}
+
+class NoiseChannel : AbstractApuChannel {
+    Divider!ushort noiseTimer;
+    ubyte lengthCounter;
+    bool lengthCounterHalt;
+    ushort shiftRegister = 1;   // (15 bits wide) At power up, the register is initially loaded with the value `1`.
+    Envelope envelope;
+    bool loopMode;
+
+    /*
+        For reference, from: https://www.nesdev.org/wiki/APU_Noise
+
+           Timer --> Shift Register   Length Counter
+                           |                |
+                           v                v
+        Envelope -------> Gate ----------> Gate --> (to mixer)
+     */
+
+    this() {
+        envelope = new Envelope();
+        noiseTimer.tock = () {
+            // Feedback is calculated as the exclusive-OR of bit 0 and one other bit: bit 6 if Mode flag is set,
+            // otherwise bit 1.
+            auto feedbackBit = (loopMode ? 6 : 1);
+            bool feedback = (shiftRegister & 1) ^ ((shiftRegister >> feedbackBit) & 1);
+            // The shift register is shifted right by one bit.
+            shiftRegister >>= 1;
+            // Bit 14, the leftmost bit, is set to the feedback calculated earlier.
+            shiftRegister = (feedback << 14) | (shiftRegister & 0x3FFF);
+        };
+    }
+
+    override void disable() {
+        lengthCounter = 0;
+    }
+
+    override ubyte getOutput() {
+        // Output range: [0, 15]
+        // The mixer receives the current envelope volume except when:
+        //  * Bit 0 of the shift register is set, or
+        //  * The length counter is 0.
+        bool isMasked = (shiftRegister & 1) || (lengthCounter <= 0);
+        return (isMasked ? 0 : envelope.getOutput());
+    }
+
+    override void onApuTick() {
+        noiseTimer.tick();
+    }
+
+    override void onHalfFrame() {
+        if(!lengthCounterHalt && lengthCounter > 0)
+            --lengthCounter;
+    }
+
+    override void onQuarterFrame() {
+        envelope.tick();
+    }
+
+    void setNoiseCtrl(in NoiseCtrl ctrl) {
+        envelope.v = (ctrl.volEnv & 0xF);
+        envelope.constantVolume = ctrl.constant;
+        lengthCounterHalt = envelope.loopFlag = ctrl.halt;
+    }
+
+    // There is no noise control register 2 -- the address for it is reserved, but it doesn't influence anything
+
+    private static immutable ushort[] NOISE_PERIOD_NTSC_LUT = [
+        4, 8, 16, 32, 64, 96, 127, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068
+    ];
+    static assert(NOISE_PERIOD_NTSC_LUT.length == 16);
+
+    void setNoiseCtrl3(in NoiseCtrl3 ctrl) {
+        loopMode = ctrl.loopMode;
+        noiseTimer.period = NOISE_PERIOD_NTSC_LUT[ctrl.period & 0xF];
+    }
+
+    void setNoiseCtrl4(in NoiseCtrl4 ctrl) {
+        lengthCounter = LENGTH_LUT[ctrl.lengthCounterLoad & 0x1F];
+        envelope.reset();
     }
 }
 
@@ -746,6 +822,7 @@ class APU {
 
     PulseChannel[2] pulse;
     TriangleChannel triangle;
+    NoiseChannel    noise;
     AbstractApuChannel[] channels;
     FrameCounter frameCounter;
     SampleBuffer sampleBuffer;
@@ -760,7 +837,8 @@ class APU {
         pulse[0] = new PulseChannel(PulseChannelID.PULSE1);
         pulse[1] = new PulseChannel(PulseChannelID.PULSE2);
         triangle = new TriangleChannel();
-        channels = [pulse[0], pulse[1], triangle];
+        noise = new NoiseChannel();
+        channels = [pulse[0], pulse[1], triangle, noise];
         frameCounter = new FrameCounter();
 
         frameCounter.qtickHandler = &onQuarterFrame;
@@ -844,7 +922,9 @@ class APU {
     real_t calcCurrentOutput() {
         return lookupMixerOutput(
             pulse[0].getOutput(), pulse[1].getOutput(),
-            triangle.getOutput(), 0, 0);
+            triangle.getOutput(),
+            noise.getOutput(),
+            0);
     }
 
     void reset() {
@@ -889,6 +969,18 @@ class APU {
         triangle.setTimerHigh(value);
     }
 
+    void writeNoiseCtrl(in NoiseCtrl value) {
+        noise.setNoiseCtrl(value);
+    }
+
+    void writeNoiseCtrl3(in NoiseCtrl3 value) {
+        noise.setNoiseCtrl3(value);
+    }
+
+    void writeNoiseCtrl4(in NoiseCtrl4 value) {
+        noise.setNoiseCtrl4(value);
+    }
+
     void writeStatus(in APUStatus value) {
         if(!value.pulse1)
             pulse[0].disable();
@@ -896,7 +988,9 @@ class APU {
             pulse[1].disable();
         if(!value.triangle)
             triangle.disable();
-        // TODO: noise, DMC channels
+        if(!value.noise)
+            noise.disable();
+        // TODO: DMC channel
     }
 
     APUStatus readStatus() {
@@ -908,7 +1002,8 @@ class APU {
         result.pulse1 = pulse[0].lengthCounter > 0;
         result.pulse2 = pulse[1].lengthCounter > 0;
         result.triangle = triangle.lengthCounter > 0;
-        // TODO: noise, and DMC channels
+        result.noise = noise.lengthCounter > 0;
+        // TODO: DMC channel
         return result;
     }
 

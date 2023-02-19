@@ -294,6 +294,27 @@ public:
                     apu.writeTriangleTimerHigh(TimerHigh(value));
                     break;
 
+                case 0x400C:
+                    // Noise envelope / length counter halt control
+                    apu.writeNoiseCtrl(NoiseCtrl(value));
+                    break;
+
+                case 0x400D:
+                    // Unused noise channel register
+                    // TODO: Maybe log a warning?
+                    debug writefln("[CPU BUS] Attempted to write $%02X to unused APU noise register ($%04X) !", value, address);
+                    break;
+
+                case 0x400E:
+                    // Noise loop mode and period control
+                    apu.writeNoiseCtrl3(NoiseCtrl3(value));
+                    break;
+
+                case 0x400F:
+                    // Noise length counter load
+                    apu.writeNoiseCtrl4(NoiseCtrl4(value));
+                    break;
+
                 default:
                     // TODO: Implement the rest of these...
                     debug writefln("[CPU BUS] Attempted to write $%02X to APU register $%04X !", value, address);
