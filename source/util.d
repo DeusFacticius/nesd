@@ -1,6 +1,9 @@
 module util;
 
 import std.traits;
+import std.range;
+import std.algorithm;
+import std.math;
 
 pure int getBit(int value, int bit) {
     pragma(inline);
@@ -69,4 +72,92 @@ unittest {
     assert(b == 0);
     assert(1);  // assert non-zero values are true
     assert(!0); // assert zero values are false
+}
+
+struct CircularBuffer(T, size_t size) {
+    T[size] buffer;
+    size_t pos;
+
+    alias ElementType = T;
+
+    void put(in T value) {
+        buffer[pos++ % size] = value;
+    }
+
+    @property T front() const {
+        assert(pos > 0, "Attempted to fetch front of empty buffer");
+        return buffer[(pos-1) % size];
+    }
+
+    @property bool empty() const {
+        return pos <= 0;
+    }
+
+    @property size_t length() const {
+        return min(pos, size);
+    }
+
+    @property position() const {
+        return pos;
+    }
+
+    @property localPosition() const {
+        return pos % size;
+    }
+
+    void clear() {
+        pos = 0;
+        buffer[] = buffer.init[];
+    }
+
+    auto reader() const {
+        // chain the front of buffer (write head -> end) to the back of the buffer (start -> write head)
+        // unless write head hasn't wrapped yet, in which case it is just start -> write head
+        if(pos < size) {
+            // we have to use an empty range at the head to keep the return types the same, as chain() otherwise
+            // aliases to the type of the first input if only one input given
+            return chain(buffer[0..0], buffer[0..pos]);
+        } else {
+            return chain(buffer[localPosition..$], buffer[0..localPosition]);
+        }
+    }
+}
+
+struct FixedPoint(T, uint bits) if(isIntegral!T && 8*T.sizeof >= bits) {
+    T value;
+
+    this(float f) {
+        value = cast(T)(round(f * exp2(bits)));
+    }
+
+    alias value this;
+}
+
+struct FixedSizeBuffer(T, size_t size) {
+    alias FlushListener = void delegate(in T[] buf);
+
+    T[size] buffer;
+    size_t pos;
+    FlushListener listener;
+
+    void put(in T value) {
+        assert(pos >= 0 && pos < buffer.length);
+        buffer[pos++] = value;
+        if(pos >= buffer.length)
+            flush();
+    }
+
+    void reset(bool clear=false)() {
+        pos = 0;
+        static if(clear) {
+            buffer[] = buffer.init;
+        }
+    }
+
+    void flush() {
+        if(pos > 0 && listener) {
+            listener(buffer[0..pos]);
+        }
+        reset();
+    }
 }

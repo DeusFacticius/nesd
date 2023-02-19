@@ -283,7 +283,7 @@ alias VBlankInterruptListener = void delegate(PPU ppu);
 /// Delegate / handler intended for rendering the screen after each
 /// frame, that is called regardless of nmiEnabled status
 /// that is called regardless of NMI status.
-alias FrameListener = void delegate(const PPU ppu, const NtscNesScreen screen);
+alias FrameListener = void delegate(const PPU ppu, const ref NtscNesScreen screen);
 
 class PPU {
     // TODO: Refactor attribute / method visibility to expose only what's necessary
@@ -929,7 +929,7 @@ public:
     void triggerFrameListeners() {
         // General purpose listeners are called regardless
         foreach(listener; frameListeners) {
-            listener(this, screen);
+            listener(this, screen[]);
         }
     }
 
@@ -1206,7 +1206,7 @@ unittest {
     assert(ppu.tickCounter == 0);
     // Add a frame listener
     int listenerFrames = 0;
-    auto listener = (const PPU ppu, const NtscNesScreen screen) {
+    auto listener = (const PPU ppu, const ref NtscNesScreen screen) {
         ++listenerFrames;
     };
     ppu.addFrameListener(listener);

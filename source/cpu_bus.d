@@ -3,6 +3,7 @@ module cpu_bus;
 import std.format;
 import std.stdio;
 import cpu;
+import apu;
 import bus;
 import ppu;
 import util;
@@ -45,12 +46,14 @@ class CPUBus : NESBus {
 public:
     // TODO: Revise visibility of members
     CPU cpu;
+    APU apu;
     PPU ppu;
     Mapper mapper;
     AbstractPeripheral[NUM_PERIPHERALS] inputs;
 
-    this(CPU cpu, PPU ppu, Mapper mapper=null, AbstractPeripheral input1=null, AbstractPeripheral input2=null) {
+    this(CPU cpu, APU apu, PPU ppu, Mapper mapper=null, AbstractPeripheral input1=null, AbstractPeripheral input2=null) {
         this.cpu = cpu;
+        this.apu = apu;
         this.ppu = ppu;
         this.mapper = mapper;
         inputs[0] = (input1 ? input1 : new NullPeripheral(PeripheralPort.PORT1));
@@ -240,12 +243,66 @@ public:
 
     ubyte readWriteAPURegister(bool write)(addr address, const ubyte value=0) {
         assert(address >= 0x4000 && address <= 0x4013);
-        // TODO: implement me
+        // DRY pulse channel calculation, TODO: optimize to only necessary scope
+        auto pulseChannel = ((address >> 2) & 1);
+
         static if(write) {
             // do the thing
+            switch(address) {
+                case 0x4000:
+                case 0x4004:
+                    // Pulse 1/2 control register
+                    apu.writePulseCtrl(pulseChannel, PulseCtrl(value));
+                    break;
+
+                case 0x4001:
+                case 0x4005:
+                    // Pulse 1/2 sweep control
+                    apu.writePulseSweepCtrl(pulseChannel, PulseSweepCtrl(value));
+                    break;
+
+                case 0x4002:
+                case 0x4006:
+                    // Pulse 1/2 timer low
+                    apu.writePulseTimerLow(pulseChannel, value);
+                    break;
+
+                case 0x4003:
+                case 0x4007:
+                    // Pulse 1/2 timer high / length counter load
+                    apu.writePulseTimerHigh(pulseChannel, TimerHigh(value));
+                    break;
+
+                case 0x4008:
+                    // Triangle control / linear counter load register
+                    apu.writeTriangleCtrl(TriangleCtrl(value));
+                    break;
+
+                case 0x4009:
+                    // Unused triangle channel register
+                    // TODO: Maybe log a warning?
+                    debug writefln("[CPU BUS] Attempted to write $%02X to unused APU triangle register ($%04X) !", value, address);
+                    break;
+
+                case 0x400A:
+                    // Triangle timer low
+                    apu.writeTriangleTimerLow(value);
+                    break;
+
+                case 0x400B:
+                    // Triangle timer high / length counter load
+                    apu.writeTriangleTimerHigh(TimerHigh(value));
+                    break;
+
+                default:
+                    // TODO: Implement the rest of these...
+                    debug writefln("[CPU BUS] Attempted to write $%02X to APU register $%04X !", value, address);
+                    break;
+            }
             // vestigal return value
             return value;
         } else {
+            debug writefln("[CPU BUS] Attempted to read APU register ($%04X)!", address);
             return readOpenBus();
         }
     }
@@ -263,6 +320,7 @@ public:
             return value;
         } else {
             // TODO: Emit a warning? this is unusual behavior
+            debug writefln("[CPU BUS] Attempted to read OAMDMA ($4014)!");
             return readOpenBus();
         }
     }
@@ -270,11 +328,15 @@ public:
     ubyte readWriteSND_CHN(bool write)(const ubyte value) {
         // TODO: Implement me
         static if(write) {
-            debug writefln("[CPU BUS] Attempted to write ($%02X) to SND_CHN ($4015)", value);
+            //debug writefln("[CPU BUS] Attempted to write ($%02X) to SND_CHN ($4015)", value);
+            apu.writeStatus(APUStatus(value));
+            // vestigal return value
+            return value;
         } else {
-            debug writefln("[CPU BUS] Attempted to read from SDN_CHN ($4015)");
+            //debug writefln("[CPU BUS] Attempted to read from SDN_CHN ($4015)");
+            return apu.readStatus().raw;
         }
-        return 0;
+        assert(false, "This should not happen.");
     }
 
     ubyte readWriteJoystickIO(bool write)(addr address, const ubyte value=0) {
@@ -316,7 +378,8 @@ public:
     void writeFrameCounterControl(const ubyte value) {
         // TODO: implement me
         //assert(false, "Not implemented yet!");
-        debug writefln("[CPU BUS] Attempted to write $%02X to $4017 (frame counter control)!", value);
+        debug writefln("[CPU BUS] Writing $%02X to frame counter control ($4017) ", value);
+        apu.writeFrameCounterCtrl(FrameCounterCtrl(value));
     }
 
     ubyte read(const addr address) {

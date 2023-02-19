@@ -7,6 +7,7 @@ debug import std.stdio;
 debug import std.format;
 import ppu;
 import cpu;
+import apu;
 import cpu_bus;
 import util;
 import rom;
@@ -25,6 +26,7 @@ immutable size_t NES_NTSC_PPU_CLOCK_DIVIDER = 4;
 
 class NES {
     CPU cpu;
+    APU apu;
     PPU ppu;
     CPUBus cpuBus;
     NESFile nesFile;
@@ -33,8 +35,9 @@ class NES {
 
     this() {
         cpu = new CPU();
+        apu = new APU();
         ppu = new PPU();
-        cpuBus = new CPUBus(cpu, ppu);
+        cpuBus = new CPUBus(cpu, apu, ppu);
         cpu.bus = cpuBus;
 
         ppu.vblankInterruptListener = &this.onVBlankInterrupt;
@@ -71,13 +74,16 @@ class NES {
     void reset() {
         tickCounter = 0;
         cpu.reset();
+        apu.reset();
         ppu.reset();
     }
 
     void tick() {
         ++tickCounter;
-        if(tickCounter % NES_CPU_CLOCK_DIVIDER == 0)
+        if(tickCounter % NES_CPU_CLOCK_DIVIDER == 0) {
             cpu.doTick();
+            apu.doTick();
+        }
         if(tickCounter % NES_NTSC_PPU_CLOCK_DIVIDER == 0)
             ppu.doTick();
     }
@@ -90,6 +96,7 @@ class NES {
         // nothing but increment counter
         ppu.doTick();
         cpu.doTick();
+        apu.doTick();
         ppu.doTick();
         ppu.doTick();
         tickCounter += NES_CPU_CLOCK_DIVIDER;
@@ -102,11 +109,12 @@ class NES {
         bool cpuInstructionFinished = false;
         do {
             ppu.doTick();
+            apu.doTick();
             cpuInstructionFinished = cpu.doTick();
             ppu.doTick();
             ppu.doTick();
             tickCounter += NES_CPU_CLOCK_DIVIDER;
-        }while(!cpuInstructionFinished);
+        } while(!cpuInstructionFinished);
     }
 
     void altTick2() {

@@ -35,7 +35,7 @@ T sdlEnforce(E:Throwable = SDLException, T)(T value, lazy const(char)[] msg=null
     }
 }
 
-void InitSDL(int flags = SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_EVENTS) {
+void InitSDL(int flags = SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_AUDIO) {
     if((SDL_WasInit(0) & flags) != flags)
         sdlEnforce(SDL_Init(flags));
 }

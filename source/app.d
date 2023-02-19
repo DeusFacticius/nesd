@@ -28,11 +28,34 @@ void printUsage(in string appName) {
 	writefln("Usage: %s <romfile>", appName);
 }
 
+debug(audiodiag) {
+	void doAudioDiag() {
+		import sdl_wrapper;
+		import bindbc.sdl;
+
+		InitSDL(SDL_INIT_TIMER | SDL_INIT_EVENTS | SDL_INIT_AUDIO);
+
+		SDL_AudioSpec desired, obtained;
+		desired.freq = 44100;
+		desired.format = AUDIO_F32SYS;
+		desired.channels = 1;
+		sdlEnforce(SDL_OpenAudio(&desired, &obtained));
+
+		writefln("Desired audio: %s", desired);
+		writefln("Obtained audio: %s", obtained);
+	}
+}
+
 version(unittest) {
 
 } else {
 	int main(string[] args)
 	{
+		debug(audiodiag) {
+			doAudioDiag();
+			//return 0;
+		}
+
 		writefln("Args: %s", args);
 		if(args && args.length > 1)
 			parseArgs(args[1..$]);
