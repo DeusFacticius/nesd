@@ -281,7 +281,7 @@ public:
                 case 0x4009:
                     // Unused triangle channel register
                     // TODO: Maybe log a warning?
-                    debug writefln("[CPU BUS] Attempted to write $%02X to unused APU triangle register ($%04X) !", value, address);
+                    //debug writefln("[CPU BUS] Attempted to write $%02X to unused APU triangle register ($%04X) !", value, address);
                     break;
 
                 case 0x400A:
@@ -302,7 +302,7 @@ public:
                 case 0x400D:
                     // Unused noise channel register
                     // TODO: Maybe log a warning?
-                    debug writefln("[CPU BUS] Attempted to write $%02X to unused APU noise register ($%04X) !", value, address);
+                    //debug writefln("[CPU BUS] Attempted to write $%02X to unused APU noise register ($%04X) !", value, address);
                     break;
 
                 case 0x400E:

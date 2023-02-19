@@ -4,6 +4,7 @@ module apu;
 
 import std.bitmanip;
 import std.stdio;
+import std.format;
 import std.algorithm.searching;
 import std.traits;
 import util;
@@ -236,6 +237,19 @@ union APUStatus {
             bool, "dmcInterrupt", 1,
         ));
     }
+
+    string toString() const {
+        return format("%c%c%c%c%c%c%c%c",
+            pulse1 ? '1' : '-',
+            pulse2 ? '2' : '-',
+            triangle ? 'T' : '-',
+            noise ? 'N' : '-',
+            dmc ? 'D' : '-',
+            unused ? '?' : '-',
+            frameInterrupt ? 'F' : '-',
+            dmcInterrupt ? 'I' : '-'
+        );
+    }
 }
 static assert(APUStatus.sizeof == ubyte.sizeof);
 
@@ -350,12 +364,26 @@ class Envelope {
 }
 
 class AbstractApuChannel {
+    ubyte lengthCounter;
+    bool lengthCounterHalt;
+
     void onApuTick() {}
     void onCpuTick() {}
     void onQuarterFrame() {}
-    void onHalfFrame() {}
 
-    abstract void disable();
+    void setLengthCounterLoad(uint loadValue) {
+        lengthCounter = LENGTH_LUT[loadValue & 0x1F];
+    }
+
+    void onHalfFrame() {
+        if(!lengthCounterHalt && lengthCounter > 0)
+            --lengthCounter;
+    }
+
+    void disable() {
+        lengthCounter = 0;
+    }
+
     abstract ubyte getOutput();
 }
 
@@ -370,8 +398,6 @@ class PulseChannel : AbstractApuChannel {
     Envelope envelope;
     SweepUnit sweep;
     Sequencer!bool sequencer;
-    ubyte lengthCounter;
-    bool lengthCounterHalt;
 
     this(PulseChannelID pulseChannelId) {
         this.pulseChannelId = pulseChannelId;
@@ -425,18 +451,12 @@ class PulseChannel : AbstractApuChannel {
         // Set the high 3 (of 11) bits of the timer, set the length counter from LUT
         // also reset the sequencer & envelope, but the period timer is _not_ reset
         pulseTimer.period = ((value.timerHigh << 8) | (pulseTimer.period & 0xFF)) & 0x7FF;
-        lengthCounter = LENGTH_LUT[value.lengthCounterLoad];
+        setLengthCounterLoad(value.lengthCounterLoad);
         sequencer.reset();
         envelope.reset();
 
         // Changing the timer period causes the sweep unit's target period to be udpated
         sweep.calcTargetPeriod();
-    }
-
-    override void disable() {
-        // immediately silence (by setting lengthCounter = 0) as a result of writing 0 to respective bit in
-        // APU status ($4015)
-        lengthCounter = 0;
     }
 
     override ubyte getOutput() {
@@ -447,25 +467,22 @@ class PulseChannel : AbstractApuChannel {
         return envelope.getOutput();
     }
 
-    void tickLengthCounter() {
-        if(lengthCounter > 0 && !lengthCounterHalt)
-            --lengthCounter;
-    }
-
     override void onApuTick() {
+        super.onApuTick();
         // The pulse timer (period) is clocked on every APU tick
         pulseTimer.tick();
     }
 
     override void onQuarterFrame() {
+        super.onQuarterFrame();
         // Only the envelope timer is clocked on quarter-frame ticks
         envelope.tick();
     }
 
     override void onHalfFrame() {
-        // Only the sweep and length counters are clocked on half-frame ticks
+        super.onHalfFrame();
+        // Only the sweep counter (in addition to length counter, handled in super method) are ticked on half frames
         sweep.tick();
-        tickLengthCounter();
     }
 
     // Given the sweep unit's interaction with the period timer (since it manipulates frequency), declaring it
@@ -522,20 +539,18 @@ class PulseChannel : AbstractApuChannel {
     }
 }
 
-private static immutable ubyte[] TRIANGLE_SEQ = [
-    15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-];
-static assert(TRIANGLE_SEQ.length == 32);
-
 class TriangleChannel : AbstractApuChannel {
     Divider!ushort seqTimer;
-    bool controlFlag;
     Sequencer!ubyte sequencer;
     ubyte linearCounter;
     ubyte linearCounterReloadValue;
     bool reload;
-    ubyte lengthCounter;
+
+    private static shared immutable ubyte[] TRIANGLE_SEQ = [
+        15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    ];
+    static assert(TRIANGLE_SEQ.length == 32);
 
     /*
         For reference, from: https://www.nesdev.org/wiki/APU_Triangle
@@ -549,30 +564,45 @@ class TriangleChannel : AbstractApuChannel {
     this() {
         sequencer.sequence = TRIANGLE_SEQ[];
         seqTimer.tock = () { sequencer.advance(); };
+        setTriangleCtrl(TriangleCtrl(0));
+        setTimerLow(0);
+        setTimerHigh(TimerHigh(0));
     }
 
     override void onCpuTick() {
+        super.onCpuTick();
         // The sequencer timer is clocked off of CPU ticks rather than APU ticks
         // The sequencer timer is only clocked if both linear & length counters are nonzero
         if(linearCounter && lengthCounter)
             seqTimer.tick();
     }
 
-    override void disable() {
-        lengthCounter = 0;
-    }
-
     override ubyte getOutput() {
         // Triangle channel always outputs the current sequencer value --
         ubyte output = sequencer.getCurrent();
+
         // Triangle channel can generate frequencies up to Fcpu/32 (~55.9kHz for NTSC), well above audible range (20kHz)
         // Although with perfect sampling rate these would be inaudible, the emulator itself runs slow and sampling
         // rate is kludged, so it results in a high pitched but audible whine. To save our ears (and speakers), we'll
         // force clamp anything of too high of frequency by disabling the output when frequency is beyond some threshold
-        return (seqTimer.period > 3 ? output : 0);
+        if(seqTimer.period <= 3)
+            output = 0;
+
+        // Another intentional deviation from real implementation -- Unlike other channels, when triangle length
+        // counter reaches 0, the output is NOT muted -- instead, the sequencer just stops being clocked, therefore
+        // outputing a flat (but biased in 30 of 32 cases) waveform. Given kludged sampling implementation, this
+        // may contribute to some extraneous & audible aliasing / artifacts. Experimentally, lets negate any biasing
+        // when the channel is otherwise inaudible -- but watch out for subtle impacts this may have in mixer / volume
+        // output, given that mixing of triangle + noise + DMC are all somewhat coupled together.
+        // TODO: Re-evaluate this ^ later on
+        if(lengthCounter <= 0)
+            output = 0;
+
+        return output;
     }
 
     override void onQuarterFrame() {
+        super.onQuarterFrame();
         // Linear counter is clocked on quarter frames
         // If the linear counter reload flag is set, the linear counter is reloaded with the counter reload value,
         // otherwise if the linear counter is non-zero, it is decremented.
@@ -581,21 +611,14 @@ class TriangleChannel : AbstractApuChannel {
         else if(linearCounter > 0)
             --linearCounter;
         // If the control flag is clear, the linear counter reload flag is cleared.
-        if(!controlFlag)
+        if(!lengthCounterHalt)
             reload = false;
-    }
-
-    override void onHalfFrame() {
-        // Length counters are clocked on half frames
-        // length counter only decremented if halt ('controlFlag' for triangle channel) is clear
-        if(lengthCounter > 0 && !controlFlag)
-            --lengthCounter;
     }
 
     void setTriangleCtrl(in TriangleCtrl value) {
         // Does not set the reload flag (?)
         linearCounterReloadValue = value.linearCounterLoad & 0x7F;
-        controlFlag = value.controlFlag;
+        lengthCounterHalt = value.controlFlag;
     }
 
     void setTimerLow(in ubyte value) {
@@ -604,15 +627,13 @@ class TriangleChannel : AbstractApuChannel {
 
     void setTimerHigh(in TimerHigh value) {
         seqTimer.period = ((value.timerHigh << 8)  | (seqTimer.period & 0xFF)) & 0x07FF;
-        lengthCounter = LENGTH_LUT[value.lengthCounterLoad];
+        setLengthCounterLoad(value.lengthCounterLoad);
         reload = true;
     }
 }
 
 class NoiseChannel : AbstractApuChannel {
     Divider!ushort noiseTimer;
-    ubyte lengthCounter;
-    bool lengthCounterHalt;
     ushort shiftRegister = 1;   // (15 bits wide) At power up, the register is initially loaded with the value `1`.
     Envelope envelope;
     bool loopMode;
@@ -638,10 +659,9 @@ class NoiseChannel : AbstractApuChannel {
             // Bit 14, the leftmost bit, is set to the feedback calculated earlier.
             shiftRegister = (feedback << 14) | (shiftRegister & 0x3FFF);
         };
-    }
-
-    override void disable() {
-        lengthCounter = 0;
+        setNoiseCtrl(NoiseCtrl(0));
+        setNoiseCtrl3(NoiseCtrl3(0));
+        setNoiseCtrl4(NoiseCtrl4(0));
     }
 
     override ubyte getOutput() {
@@ -654,15 +674,12 @@ class NoiseChannel : AbstractApuChannel {
     }
 
     override void onApuTick() {
+        super.onApuTick();
         noiseTimer.tick();
     }
 
-    override void onHalfFrame() {
-        if(!lengthCounterHalt && lengthCounter > 0)
-            --lengthCounter;
-    }
-
     override void onQuarterFrame() {
+        super.onQuarterFrame();
         envelope.tick();
     }
 
@@ -685,7 +702,7 @@ class NoiseChannel : AbstractApuChannel {
     }
 
     void setNoiseCtrl4(in NoiseCtrl4 ctrl) {
-        lengthCounter = LENGTH_LUT[ctrl.lengthCounterLoad & 0x1F];
+        setLengthCounterLoad(ctrl.lengthCounterLoad);
         envelope.reset();
     }
 }
@@ -847,6 +864,9 @@ class APU {
         //sampleTimer.reset(DEFAULT_SAMPLE_PERIOD);
         //sampleTimer.tock = &sampleOutput;
         sampleTs = 0;
+
+        // Complete initialization with a full reset
+        reset();
     }
 
     @property SampleBufferListener sampleBufferListener() {
@@ -982,6 +1002,12 @@ class APU {
     }
 
     void writeStatus(in APUStatus value) {
+        //debug writefln("[APU] Setting APU status: %s", value);
+        // TODO: There's still some ambiguity Re: does a channel _stay_ disabled until it's been explicitly
+        //      enabled via APU status register? if so, what is the mechanism for it staying disabled? is it
+        //      just muted? Are length counters constantly overwritten to 0?
+        //      Current behavior -- writing 0 to a channel here stops it (by setting lengthCounter = 0), but
+        //      subsequent write to channel registers will enable it w/o ever enabling it here.
         if(!value.pulse1)
             pulse[0].disable();
         if(!value.pulse2)
