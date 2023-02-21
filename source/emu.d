@@ -290,9 +290,18 @@ class EmulatorApp {
         nes.apu.sampleBuffer.flush();
     }
 
+    // Not to be called externally, called automatically when existing run()
+    private void shutdown() {
+        if(nes) {
+            nes.stop();
+        }
+    }
+
     void run() {
         import std.datetime.stopwatch : StopWatch, AutoStart;
         import core.thread;
+
+        scope(exit) shutdown();
 
         //ulong baseTime = SDL_GetTicks64();
         ulong frameCounter = 0;
@@ -305,7 +314,11 @@ class EmulatorApp {
             // naive speed control, just tick NES as fast as
             // possible :-/
             synchronized(nes) {
-                nes.altTick2();
+                debug(trace) {
+                    nes.altTick3();
+                } else {
+                    nes.altTick2();
+                }
             }
 
             //ulong endTime = SDL_GetTicks64();
@@ -412,6 +425,9 @@ class EmulatorApp {
         NESFile cart = new NESFile(filename);
         synchronized(nes) {
             nes.insertCartridge(cart);
+            debug(trace) {
+                nes.startLogging("trace.log");
+            }
         }
     }
 

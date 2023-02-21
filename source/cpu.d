@@ -719,13 +719,13 @@ class CPU {
                 opdef.handler(this);
                 break;
         }
-        debug(trace) {
-            auto endingTicks = tickCounter;
-            auto totalTicks = endingTicks-startingTicks;
-            auto lines = disassemble(opBuffer, originalPC);
-            assert(lines.length == 1, format("Expected lines.length = 1, got %d\nLines: %s", lines.length, lines));
-            writefln("%-48s%s", lines[0], getStatusString());
-        }
+        //debug(trace) {
+        //    auto endingTicks = tickCounter;
+        //    auto totalTicks = endingTicks-startingTicks;
+        //    auto lines = disassemble(opBuffer, originalPC);
+        //    //assert(lines.length == 1, format("Expected lines.length = 1, got %d\nLines: %s", lines.length, lines));
+        //    //writefln("%-48s%s", lines[0], getStatusString());
+        //}
     }
 
     string getRegsStatusString() {
@@ -736,8 +736,7 @@ class CPU {
         return format("%-48s%s", disassemblePC(), getRegsStatusString());
     }
 
-    /// Read a byte from PC, increment PC, and incur a(n optionally
-    /// yielding) tick
+    /// Read a byte from PC, increment PC, and incur a(n optionally yielding) tick
     ubyte readPC(bool advance=true, bool yield=true)() {
         ubyte result = readBus!(true,yield)(regs.PC);
         static if(advance)
@@ -747,7 +746,7 @@ class CPU {
     }
 
     /// Helper function to assemble a 16 bit address from discrete low and high bytes
-    addr makeAddr(ubyte lo, ubyte hi) {
+    pure static addr makeAddr(ubyte lo, ubyte hi) {
         return cast(addr)(((hi << 8) + lo) & 0xFFFF);
     }
 
@@ -2050,8 +2049,8 @@ class CPU {
         return result;
     }
 
-    pure static string formatDisassemblyLine(in addr offset, in ubyte[] rawBytes, in string mnemonic, in string operands, bool illegal=false) {
-        string bytecode = rawBytes.map!((ubyte x){ return format("%02X",x);} ).join(" ");
+    static string formatDisassemblyLine(in addr offset, in ubyte[] rawBytes, in string mnemonic, in string operands, bool illegal=false) {
+        string bytecode = rawBytes.map!(x => format("%02X",x)).join(" ");
         char indicator = (illegal ? '*' : ' ');
         return format("%04X  %-10s%c%s %-32s", offset, bytecode, indicator, mnemonic, operands).strip();
     }

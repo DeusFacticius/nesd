@@ -51,11 +51,6 @@ version(unittest) {
 } else {
 	int main(string[] args)
 	{
-		debug(audiodiag) {
-			doAudioDiag();
-			//return 0;
-		}
-
 		writefln("Args: %s", args);
 		if(args && args.length > 1)
 			parseArgs(args[1..$]);
@@ -75,7 +70,7 @@ version(unittest) {
 
 			app.run();
 			return 0;
-		} catch(Exception ex) {
+		} catch(Throwable ex) {
 			stderr.writefln("Exception: %s (%s) ", ex, ex.msg);
 			stderr.writefln("*****: SDL_GetError(): %s", SDL_GetError().fromStringz());
 			return -2;

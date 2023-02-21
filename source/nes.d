@@ -32,6 +32,8 @@ class NES {
     NESFile nesFile;
     Mapper  mapper;
     size_t tickCounter;
+    bool traceLogEnabled;
+    File *traceLog;
 
     this() {
         cpu = new CPU();
@@ -78,6 +80,14 @@ class NES {
         ppu.reset();
     }
 
+    void stop() {
+        // TODO: what else should be done if stopped? a full reset?
+        if(traceLogEnabled && traceLog) {
+            traceLog.close();
+            traceLog = null;
+        }
+    }
+
     void tick() {
         ++tickCounter;
         if(tickCounter % NES_CPU_CLOCK_DIVIDER == 0) {
@@ -106,6 +116,10 @@ class NES {
         // Another alternative progression mechanism --
         // Tick cpu & ppu in sync until CPU has completed
         // an instruction, as indicated by response from cpu.doTick()
+        if(traceLogEnabled && traceLog) {
+            traceLog.writeln(buildTraceLine());
+        }
+
         bool cpuInstructionFinished = false;
         do {
             ppu.doTick();
@@ -126,7 +140,24 @@ class NES {
         }
     }
 
-    debug string buildTraceLine() {
+    void altTick3() {
+        // Slower tick mechanism, similar to altTick2 but allows logging
+        auto frameCounter = ppu.frameCounter;
+        while(frameCounter == ppu.frameCounter) {
+            cpuStep();
+        }
+    }
+
+    void startLogging(string filename) {
+        if(traceLog) {
+            traceLog.close();
+            traceLog = null;
+        }
+        traceLog = new File(filename, "w");
+        traceLogEnabled = true;
+    }
+
+    protected string buildTraceLine() {
         string cpuTrace = cpu.getStatusString();
         cpuTrace ~= format(" PPU:%3d,%3d CYC:%d",ppu.scanline, ppu.cycle, cpu.tickCounter);
         return cpuTrace;

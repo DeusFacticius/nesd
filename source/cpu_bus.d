@@ -237,6 +237,8 @@ public:
             // Joystick + framecounter I/O
             return readWriteJoystickIO!(write)(address, value);
         } else {
+            // Address falls into the 'APU and I/O functionality that is normally disabled'
+            // TODO: wat2do ?
             assert(false, format("Invalid address passed to readWriteIO: %04X", address));
         }
     }
