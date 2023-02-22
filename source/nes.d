@@ -3,8 +3,8 @@ module nes;
 // Master / facade / mediator for the aggregate of individual
 // NES components
 
-debug import std.stdio;
-debug import std.format;
+import std.stdio;
+import std.format;
 import ppu;
 import cpu;
 import apu;

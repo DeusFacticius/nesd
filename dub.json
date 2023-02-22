@@ -3,11 +3,26 @@
 		"Rick Worthington"
 	],
 	"dependencies": {
-		"bindbc-sdl": "~>1.2.0",
-		"fluent-asserts": "~>1.0.0",
-		"silly": "~>1.1.1"
+		"bindbc-sdl": "~>1.2.0"
 	},
-	"description": "A minimal D application.",
+	"configurations": [
+		{
+			"name": "application",
+			"targetType": "executable",
+			"dependencies": {
+				"bindbc-sdl": "~>1.2.0"
+			}
+		},
+		{
+			"name": "unittest",
+			"dependencies": {
+				"bindbc-sdl": "~>1.2.0",
+				"fluent-asserts": "~>1.0.0",
+				"silly": "~>1.1.1"
+			}
+		}
+	],
+	"description": "A Nintendo Entertainment System (NES) emulator in D.",
 	"libs": [
 		"SDL2",
 		"SDL2_image"

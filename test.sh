@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-exec dub test -- -t 1 -v "$@"
+exec dub test -c unittest -- -t 1 -v "$@"
