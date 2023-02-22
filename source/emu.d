@@ -3,6 +3,8 @@
 
 module emu;
 
+import std.file;
+import std.string;
 import std.stdio;
 import std.format;
 import std.typecons;
@@ -415,6 +417,15 @@ class EmulatorApp {
                     static if(down)
                         dumpPalette();
                     break;
+
+                case SDL_Scancode.SDL_SCANCODE_O:
+                    static if(down)
+                        try {
+                            saveScreenshot(findNoclobberFilename("screenshot_%04d.bmp"));
+                        } catch(Exception ex) {
+                            writefln("Failed to save screenshot: %s", ex);
+                        }
+                    break;
             }
             default:
                 break;
@@ -429,6 +440,24 @@ class EmulatorApp {
                 nes.startLogging("nesd_trace.log");
             }
         }
+    }
+
+    string findNoclobberFilename(int start = 0, int max=100)(string tmplString) {
+        // Try to assert that it's a proper format string
+        assert(format(tmplString, 1) != format(tmplString, 2));
+        string result;
+        foreach(i; start..max) {
+            result = format(tmplString, i);
+            if(!exists(result))
+                return result;
+        }
+        throw new Exception("Unable to find filename that does not clobber existing files");
+    }
+
+    void saveScreenshot(string filename) {
+        SDLSurface surf = screenRenderer.mappedSurface;
+        writefln("Saving screenshot to %s ...", filename);
+        sdlEnforce(SDL_SaveBMP(surf.surface, filename.toStringz));
     }
 
 debug:
