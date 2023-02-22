@@ -1,8 +1,9 @@
 module mapper;
 
 import std.format;
-import std.algorithm.comparison;    // for min(...)
+import std.algorithm;    // for min(...)
 import std.stdio;
+import std.bitmanip;
 import bus;
 import util;
 import rom;
@@ -19,6 +20,19 @@ immutable addr PRG_RAM_END          = 0x7FFF;
 // PRG RAM size is dictated by cartridge, up to 8KiB but often less
 // When size is less than 8KiB (e.g. 2 - 4KiB), the remainder of address space
 // is mirrored to fill the window
+
+private static enum PRG_ROM_START   = 0x8000;
+private static enum PRG_ROM_END     = 0xFFFF;
+private static enum PRG_ROM_LOWER_START = 0x8000;
+private static enum PRG_ROM_LOWER_END   = 0xBFFF;
+private static enum PRG_ROM_UPPER_START = 0xC000;
+private static enum PRG_ROM_UPPER_END   = 0xFFFF;
+private static enum CHR_ROM_START = 0x0000;
+private static enum CHR_ROM_END   = 0x1FFF;
+private static enum CHR_ROM_LOWER_START = 0x0000;
+private static enum CHR_ROM_LOWER_END   = 0x0FFF;
+private static enum CHR_ROM_UPPER_START = 0x1000;
+private static enum CHR_ROM_UPPER_END   = 0x1FFF;
 
 /**
     Abstract class for representing a 'mapper' (onboard game-cartridge circuitry).
@@ -45,6 +59,21 @@ class Mapper {
 //protected:
     NESFile nesFile;
     PPU     ppu;
+
+    /// Helper function to translate PPU nametable horizontal mirroring
+    pure static addr horizontalMirror(addr address) {
+        // For horizontal mirroring:
+        // $2400 mirrors $2000, $2C00 mirrors $2800, so value of bit 10 is ignored
+        // Physical RAM is linear though, so $2800 is mapped to $2400 by replacing
+        // bit 10 with the value of bit 11, and bit 11 is cleared
+        // TLDR: bit 10 is overwritten with bit 11
+        return (address & ~NT_SELECT_MASK) | ((address >> 1) & 0x0400);
+    }
+
+    pure static addr verticalMirror(addr address) {
+        // Vertical mirroring -- bit 11 is ignored / cleared
+        return (address & ~(1 << 11));
+    }
 }
 
 alias MapperFactoryFunc = Mapper function(NESFile f, PPU p);
@@ -62,6 +91,7 @@ shared static this() {
     import std.exception : assumeUnique;
     MapperFactoryFunc[uint] tmp = [
         0: defaultMapperFactoryFunc!NROMMapper(),
+        1: defaultMapperFactoryFunc!MMC1Mapper(),
         2: defaultMapperFactoryFunc!UxROMMapper(),
     ];
     tmp.rehash();
@@ -114,23 +144,21 @@ class NROMMapper : Mapper {
     // For now -- provide 2KiB and mirror
     ubyte[] prgRAM;
 
-    alias ChrRamBank = ubyte[8192];
-    ChrRamBank chrRamBank;
+    alias ChrBank = ubyte[8192];
+    ubyte[] chrRamBank;
 
     this(NESFile file, PPU ppu) {
         super(file, ppu);
-        // Ensure the rom has at least 1 CHR ROM bank, NROM does not have a bank
-        // switching mechanism and CHR RAM not yet supported
-        //assert(file.chrRomBanks.length >= 1, "Expected 1 or more CHR ROM banks");
-        // Ensure the ROM has at least 1 (and not more than 2) PRG ROM bank(s)
+        // Ensure the ROM has at least 1 PRG ROM bank(s)
         // NROM does not have a bank switching mechanism
-        //assert(file.prgRomBanks.length >= 1 && file.prgRomBanks.length <= 2, "Expected [1,2] PRG ROM banks");
+        assert(file.prgRomBanks.length >= 1);
         auto prgRAMSize = (nesFile.header.prgRAMSize == 0 ? 8192 : nesFile.header.prgRAMSize);
-        this.prgRAM = new ubyte[prgRAMSize];
+        if(prgRAMSize)
+            this.prgRAM = new ubyte[prgRAMSize];
 
-        // Copy the contents of CHR ROM to CHR RAM, if available
-        if(this.nesFile.chrRomBanks.length > 0)
-            this.chrRamBank[] = this.nesFile.chrRomBanks[0][];
+        // If no CHR ROM banks provided, assume 8KiB of on-board CHR RAM is intended
+        if(this.nesFile.chrRomBanks.length == 0)
+            chrRamBank = new ubyte[8192];
     }
 
     override ubyte readPPU(addr address) {
@@ -160,9 +188,11 @@ class NROMMapper : Mapper {
                 static if(write) {
                     // If the NES ROM file provided CHR ROM banks, assume this write was a mistake (?)
                     if(nesFile.chrRomBanks.length > 0) {
-                        debug writefln("[MAPPER] Attempted to write $%02X into pattern rom @ $%04X", value, address);
+                        // Ignore the attempt to write to CHR ROM
+                        debug writefln("[MAPPER] Attempted to write $%02X into CHR rom @ $%04X", value, address);
                     } else {
-                        // Otherwise, assume the cartridge expects (writable) CHR RAM to fill pattern space
+                        // Otherwise, assume the cartridge has (writable) CHR RAM to fill pattern space
+                        assert(chrRamBank);
                         chrRamBank[(address & 0x1FFF)] = value;
                     }
                     // vestigal return value
@@ -175,6 +205,7 @@ class NROMMapper : Mapper {
                     if(nesFile.chrRomBanks.length > 0)
                         return nesFile.chrRomBanks[0][(address & 0x1FFF)];
                     else {
+                        assert(chrRamBank);
                         return chrRamBank[(address & 0x1FFF)];
                     }
                 }
@@ -186,13 +217,10 @@ class NROMMapper : Mapper {
                 // TODO: Consider 4-screen mode, which means ignoring this bit
                 addr target;
                 if(nesFile.header.mirrorMode == MIRROR_MODE_HORIZONTAL) {
-                    // $2400 mirrors $2000, $2C00 mirrors $2800, so value of bit 10 is ignored
-                    // Physical RAM is linear though, so $2800 is mapped to $2400 by replacing
-                    // bit 10 with the value of bit 11, and bit 11 is cleared
-                    target = (address & ~NT_SELECT_MASK) | ((address) >> 1 & NT_SELECT_MASK);
+                    target = horizontalMirror(address);
                 } else {
                     // bit 11 is ignored
-                    target = (address & ~(1 << 11));
+                    target = verticalMirror(address);
                 }
                 static if(write) {
                     ppu.writeVRAM(target, value);
@@ -336,5 +364,303 @@ class UxROMMapper : NROMMapper {
         }
         // delegate to default / superclass
         return readWriteCPU!write(address, value);
+    }
+}
+
+class MMC1Mapper : NROMMapper {
+    union LoadRegister {
+        ubyte raw;
+        struct {
+            mixin(bitfields!(
+                uint, "dataBit", 1,
+                uint, "unused", 6,
+                bool, "reset", 1,
+            ));
+        }
+    }
+
+    union ControlRegister {
+        ubyte raw;
+        struct {
+            mixin(bitfields!(
+                uint, "mirrorMode", 2,
+                uint, "prgRomBankMode", 2,
+                bool, "dualBankMode", 1,
+                uint, "unused", 3,
+            ));
+        }
+        alias raw this;
+    }
+
+    private static enum MirrorMode : uint {
+        OneScreen_Low = 0,
+        OneScreen_High = 1,
+        Vertical = 2,
+        Horizontal = 3,
+    }
+
+    private static enum PrgRomBankMode: uint {
+        Full = 0,   // the full 32KiB space (both lower and upper banks) is switchable, ignoring low bit of bank index
+        Full2 = 1,  // Ditto ^ ... maybe this doesn't make a good enum :-/
+        LowBankFixed = 2,   // The 'first' bank is fixed to $8000, high bank ($C000) swappable
+        HighBankFixed = 3,  // The 'last' bank is fixed to $C000, low bank ($8000) is swappable
+    }
+
+    ControlRegister control = ControlRegister(0x0C); // supposed power up state (prgRomBankMode == 3)
+    ubyte[2] chrBankSelect;
+    ubyte prgBankSelect;
+    ubyte shiftReg;
+    ubyte writeCount;
+
+    this(NESFile file, PPU ppu) {
+        super(file, ppu);
+    }
+
+    override void writeCPU(addr address, const ubyte value) {
+        // Override writes from CPU to PRG ROM space, as this is the mechanism for interacting with the mapper controls
+        if(address >= 0x8000 && address <= 0xFFFF) {
+            writeLoadShiftRegister(address, LoadRegister(value));
+            // The actual write is effectively a NOP, no need to forward / delegate to base class
+        } else {
+            // Delegate to base implementation
+            super.writeCPU(address, value);
+        }
+    }
+
+    override ubyte readCPU(addr address) {
+        // Override reads from CPU to PRG ROM space, as this mapper utilizes bank switching
+        if(address >= PRG_ROM_START && address <= PRG_ROM_END) {
+            return readPrgRom(address);
+        } else {
+            // delegate to base implementation
+            return super.readCPU(address);
+        }
+    }
+
+    override void writePPU(addr address, const ubyte value) {
+        readWritePpuMmc1!true(address, value);
+    }
+
+    override ubyte readPPU(addr address) {
+        return readWritePpuMmc1!false(address);
+    }
+
+    ubyte readWritePpuMmc1(bool write)(addr address, const ubyte value=0) {
+        // Only pattern (CHR) and nametable access is overridden, the rest (palettes?) can be
+        // delegated to base implementation
+        ubyte page = (address >> 8) & 0xFF;
+        switch(page) {
+            case 0x00: .. case 0x1F:
+                return readWritePpuChr!write(address, value);
+
+            case 0x20: .. case 0x2F:
+                return readWritePpuNT!write(address, value);
+
+            default:
+                return readWritePPU!write(address, value);
+        }
+    }
+
+    void resetShift() {
+        // Reset the shift register and write count
+        shiftReg = 0;
+        writeCount = 0;
+        debug(verbose) writefln("[MMC1] Resetting shift & write count...");
+    }
+
+    void commit(addr address) {
+        // The registers (including shift) are all only 5 bits
+        ubyte value = shiftReg & 0x1F;
+        // bits 14 & 13 of the address determine which mapper register receives the value
+        auto dest = (address >> 13) & 0x3;
+        debug ubyte*[] regs = [&control.raw, &chrBankSelect[0], &chrBankSelect[1], &prgBankSelect];
+        debug writefln("[MMC1] Writing %02X to register %d (was: %02X)", value, dest, *regs[dest]);
+        switch(dest) {
+            case 0:
+                control.raw = value;
+                break;
+            case 1:
+                chrBankSelect[0] = value;
+                break;
+            case 2:
+                chrBankSelect[1] = value;
+                break;
+            case 3:
+                prgBankSelect = value;
+                break;
+            default:
+                assert(false, "This should not happen");
+        }
+    }
+
+    void writeLoadShiftRegister(addr address, in LoadRegister value) {
+        if(value.reset) {
+            // Writing a value with reset bit set uncondtionally clears the shift register and resets the write count
+            resetShift();
+            // the control register is also 'soft reset' by ORing it with 0x0C (force prgRomBankMode to mode 3)
+            debug(verbose) writefln("[MMC1] Force reset shift & control |= 0x0C");
+            control.raw |= 0x0C;
+        } else {
+            // TODO: ignore consecutive cycle writes
+            // if(thisCycle-1 == lastWriteCycle) return;
+            // shift the data bit into the shift register, from LSB to MSB
+            // Technically we're not truely shifting, but writing bits from right to left since our model of the
+            // shift register is 8-bits rather than 5 bits.
+            shiftReg |= (value.dataBit & 0x1) << writeCount++;
+            // On the 5th write, the address is used to determine which mapper register to target and load with
+            // contents of shift register
+            if(writeCount >= 5) {
+                commit(address);
+                // Reset the shift register and write count
+                resetShift();
+            }
+        }
+    }
+
+    /// Translate a PPU address in CHR range ($0000-$1FFFF) to a (bitpacked) bank index and local offset
+    uint mapChrAddressToBankAndOffset(addr address) {
+        assert(address >= CHR_ROM_START && address <= CHR_ROM_END);
+
+        ubyte bankIdx;
+        addr localOffset;
+
+        if(control.dualBankMode) {
+            bool upper = (address & 0x1000) > 0;
+            ubyte bankSelector = (upper ? chrBankSelect[1] : chrBankSelect[0]);
+            // Translate 4KiB half-bank to 8KiB full bank index by dividing by 2
+            bankIdx = (bankSelector >> 1) & 0x0F;
+            // Translate the 8KiB offset to local offset by masking the low 12 bits and using the LSB of the bank
+            // selector as the MSB
+            localOffset = ((bankSelector&1) << 13) | (address & 0x0FFF);
+        } else {
+            // in 8KiB bank mode, only the first chrBankSelector is used and the lowest bit is ignored
+            bankIdx = chrBankSelect[0] & 0x1E;
+            // no translation of the local offset is necesary
+            localOffset = (address & 0x1FFF);
+        }
+        return (bankIdx << 16) | localOffset;
+    }
+
+    ubyte readWritePpuChr(bool write)(addr address, const ubyte value = 0) {
+        assert(address >= CHR_ROM_START && address <= CHR_ROM_END);
+
+        auto mapped = mapChrAddressToBankAndOffset(address);
+        ubyte bankIdx = (mapped >> 16) & 0xFF;
+        addr offset = (mapped & 0x1FFF);
+
+        // If we have CHR RAM ...
+        if(nesFile.chrRomBanks.length <= 0) {
+            // double check 8KiB of CHR RAM was allocated
+            assert(chrRamBank);
+            // Verify bank 0 was chosen
+            if(bankIdx != 0) {
+                // Assume this was a mistake, and log a warning
+                // TODO: Output warning to log, not stdout
+                debug writefln("[MMC1] Attempted to %s CHR RAM @ $%04X (%d:$%04X) !", (write ? format("write value $%02X to",value) : "read value from"), address, bankIdx, offset);
+                // TODO: Determine best option -- abort, wrap / mirror, or ignore
+                // For now, just wrap / mirror by proceeding
+            }
+            static if(write) {
+                chrRamBank[offset] = value;
+                // vestigal return value
+                return value;
+            } else {
+                return chrRamBank[offset];
+            }
+        } else {
+            // We have static CHR ROM
+            assert(nesFile.chrRomBanks.length > 0);
+            static if(write) {
+                // Assume attempts to write to CHR ROM are a mistake
+                // Log a warning and ignore the write
+                debug writefln("[MMC1] Attempt to write $%02X to CHR ROM @ $%04X (%d:$%04X) !", value, address, bankIdx, offset);
+                // vestigal return value
+                return value;
+            } else {
+                // Verify the mapped bank index is valid, otherwise assume its a mistake
+                if(bankIdx >= nesFile.chrRomBanks.length) {
+                    // Log a warning
+                    // TODO: output warning to logfile, not stdout
+                    //writefln("[MMC1] Attempted to %s CHR ROM @ $%04X (%d:$%04X) !", (write ? format("write value $%02X to",value) : "read value from"), address, bankIdx, offset);
+                    // TODO: Determine best option -- abort, wrap / mirror, or ignore
+                    // For now, just wrap / mirror by adjusting the bankIndex and proceeding
+                    bankIdx = bankIdx % nesFile.chrRomBanks.length;
+                }
+                return nesFile.chrRomBanks[bankIdx][offset];
+            }
+        }
+        assert(false, "Control flow should not reach here");
+    }
+
+    ubyte mapPrgRomBankIndex(addr address) {
+        assert(address >= PRG_ROM_START && address <= PRG_ROM_END);
+        PrgRomBankMode mode = cast(PrgRomBankMode)control.prgRomBankMode;
+        alias M = PrgRomBankMode;
+        final switch(mode) {
+            case M.Full:
+            case M.Full2:
+                // The full 32KiB PRG ROM space is switched between contiguous pairs of 16KiB ROM banks selected by
+                // prgBankSelect (ignoring LSB)
+                // the first or second bank of the pair is determined by bit 14 of the address
+                return (prgBankSelect & 0xE) | ((address >> 14) & 1);
+
+            case M.LowBankFixed:
+                // The lower bank is fixed to the first bank, the upper bank is switched by prgBankSelect register
+                return ((address & 0x4000) == 0 ? 0 : (prgBankSelect & 0xF));
+
+            case M.HighBankFixed:
+                // The upper (high) bank is fixed to the last bank, lower bank is switched by prgBankSelect register
+                return ((address & 0x4000) > 0 ? (nesFile.prgRomBanks.length-1) & 0xFF : (prgBankSelect & 0xF));
+        }
+    }
+
+    ubyte readPrgRom(addr address) {
+        assert(address >= PRG_ROM_START && address <= PRG_ROM_END, "Invalid PRG address");
+        // Map the address to the target PRG ROM bank index, based on the current mapping configuration
+        ubyte bankIdx = mapPrgRomBankIndex(address);
+        assert(bankIdx >= 0 && bankIdx < nesFile.prgRomBanks.length, format("Invalid bank index: %d [0,%d)", bankIdx, nesFile.prgRomBanks.length));
+        // Translate to offset within local bank by masking out the upper 2 bits
+        addr localOffset = (address & 0x3FFF);
+        // return the value from the target bank and offset
+        return nesFile.prgRomBanks[bankIdx][localOffset];
+    }
+
+    ubyte readWritePpuNT(bool write)(addr address, const ubyte value = 0) {
+        assert(address >= 0x2000 && address <= 0x2FFF);
+        // Unlike basic mappers, the nametable mirroring mode is governed by control register rather than
+        // hardwired solder jumper.
+        // It also adds new mirroring modes (more like 1 new mode with two sub-modes) -- single-screen mode
+        // the sub-mode determines whether lower bank or upper bank is mirrored
+        // If the mirror mode is horizontal or vertical, behavior is identical to base implementation
+        addr target = address;
+        alias M = MirrorMode;
+        MirrorMode mode = cast(MirrorMode)control.mirrorMode;
+        final switch(mode) {
+            case M.OneScreen_Low:
+                // Bits 11-10 are cleared
+                target = (address & 0xF3FF);
+                break;
+            case M.OneScreen_High:
+                // Bits 11-10 = 01
+                target = (address & 0xF3FF) | 0x0400;
+                break;
+            case M.Horizontal:
+                // Bit 11 overwrites bit 10, bit 11 cleared
+                target = horizontalMirror(address);
+                break;
+            case M.Vertical:
+                // Bit 11 is ignored / cleared
+                target = verticalMirror(address);
+                break;
+        }
+        static if(write) {
+            // Write the target in VRAM
+            ppu.writeVRAM(target, value);
+            // vestigal return value
+            return value;
+        } else {
+            // Read target from VRAM
+            return ppu.readVRAM(target);
+        }
     }
 }
