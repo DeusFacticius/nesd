@@ -426,7 +426,7 @@ class EmulatorApp {
         synchronized(nes) {
             nes.insertCartridge(cart);
             debug(trace) {
-                nes.startLogging("trace.log");
+                nes.startLogging("nesd_trace.log");
             }
         }
     }
