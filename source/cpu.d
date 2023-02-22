@@ -1131,7 +1131,7 @@ class CPU {
         branch!(ProcessorStatus.Flags.ZERO, true)(operand);
     }
 
-    /// BEQ -- Branchon EQual (immediate mode)
+    /// BEQ -- Branch on EQual (immediate mode)
     void beq() {
         beq(dataLine);
     }

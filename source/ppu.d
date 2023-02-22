@@ -726,7 +726,7 @@ public:
             ubyte tileNo, bank;
             if(ctrl.useLargeSprites) {
                 // If using large sprites, the (global) sprite pattern table
-                // configured PPUCTRL is ignored, and instead the low-bit of the
+                // configured in PPUCTRL is ignored, and instead the low-bit of the
                 // second byte is used to select a pattern table. Because large
                 // sprites are just 2x 8x8 sprites stacked vertically, and because
                 // the second sprite must follow the first in the pattern table,
