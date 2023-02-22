@@ -24,8 +24,7 @@
 	],
 	"description": "A Nintendo Entertainment System (NES) emulator in D.",
 	"libs": [
-		"SDL2",
-		"SDL2_image"
+		"SDL2"
 	],
 	"license": "proprietary",
 	"name": "nesd",
