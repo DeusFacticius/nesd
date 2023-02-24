@@ -318,6 +318,7 @@ public:
     ubyte[PPU_INTERNAL_VRAM_SIZE]   internalVRAM;
     SList!FrameListener frameListeners;
     VBlankInterruptListener vblankInterruptListener;
+    ubyte readBufferLatch;
 
     // Pair of 16-bit shift registers for background pattern table data
     ushort[2] ptrnShiftRegisters;
@@ -498,7 +499,19 @@ public:
     }
 
     ubyte readPPUDATA() {
-        ubyte result = readBus(vPtr.raw & PPU_ADDR_MASK);
+        // Data read via PPUDATA is 'delayed' due to an intermediate latch / buffer
+        ubyte result = readBufferLatch;
+        // ... _except_ for palette data, which is available immediately, but the buffer is then
+        // filled with 'shadow' VRAM (the region the palette overlaps at the end of the nametable mirror
+        // address space)
+        if(vPtr.raw >= PPU_PALETTES_START) {
+            // The result is the real palette entry
+            result = readWritePalettes!false(vPtr.raw);
+            // Read the address with the 12th bit clear for the address 'underneath' the palette
+            readBufferLatch = readBus(vPtr.raw & PPU_ADDR_MASK & ~0x1000);
+        } else {
+            readBufferLatch = readBus(vPtr.raw & PPU_ADDR_MASK);
+        }
         incrementPPUADDR();
         return result;
     }
