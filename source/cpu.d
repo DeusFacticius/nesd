@@ -884,7 +884,6 @@ class CPU {
     /// Write a value to an address on the system bus, optionally
     /// incurring a(n optionally yielding) tick in the process
     void writeBus(bool doTick=true, bool yield=true)(in addr address, in ubyte value) {
-        // TODO: assign `dataLine` (?)
         dataLine = value;
         bus.write(address, value);
         static if(doTick)

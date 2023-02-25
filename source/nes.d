@@ -101,7 +101,7 @@ class NES {
     void altTick() {
         // Alternative tick mechanism --
         // Instead of ticking the NES master clock once per
-        // tick, instead just run: 1x CPU tick, 3X PPU ticks,
+        // tick, instead just run: 1x CPU tick, 1x APU tick, 3X PPU ticks,
         // and add 12 ticks to counter (e.g. skip ticks that do
         // nothing but increment counter
         ppu.doTick();

@@ -30,20 +30,32 @@ This project is both intended as an exercise to better learn and hone my grasp o
 * PPU emulation
   * Functional, albeit with some cheese:
     * Bus address / data line multiplexing via ALE (Address Line Enable) triggered octal latch (and resulting two-cycles-per-bus-operation) isn't emulated (yet); thus resulting quirks like open-bus / open-collector effects aren't simulated properly.
-  * Still some sprite / OAM quirks yet to be tested / simulated (e.g. sprite overflow bugs that exist in real hardware, and some games expect).
+  * Still some sprite / OAM quirks yet to be tested / simulated
+    * Sprite overflow flag shouldn't be set until beginning of HBLANK
+    * OAMDATA decay after 1 or more frames
   * Sub-frame behavior of some mechanisms to be refined / investigated
 * APU
-  * Currently only stubbed out, not implemented at all yet.
+  * Waveform channels (pulse 1&2, triangle, noise) functional
+  * Frame counter functional
+    * 4-step mode IRQ sets internal flag but does not trigger IRQ yet
+  * PCM/DPCM _not_ implemented yet
+  * Adaptive sampling cheesed
+    * Sampling rate fixed to ~10% higher than ideal, extra samples dropped. Currently too much variance between individual frame timings for adaptive sampling to be reliable. Cheesed method still produces clicks/pops/skips, but subjectively sounds better / has less artifacts.
 * Mappers
   * NROM
     * Still some ambiguities surrounding details of PRG RAM size / presence / configuration.
     * Ditto ^, Re: CHR ROM vs. RAM. SMB uses NROM, but attempts to write to pattern tables.
-  * No other mappers supported yet.
+  * UxROM
+    * Implemented, still some CHR bank switching oddities.
+  * MMC1
+    * Implemented, some games still have CHR bank switching glitches, obvious from wrong tiles / sprites being rendered.
 * ROM file support
   * Currently only iNES 1.0 format implemented
     * iNES 2.0 format is backwards compatible with iNES 1.0 though, so while iNES 2.0 can be read / used, implementation doesn't currently utilize the additional features provided by newer format.
 * SDL2 used for presentation layer
   * Theoretically portable / cross-platform with no code-changes, but so far only developed and tested on intel OSX.
+* Initial profiling work results from dlang builtin profiling:
+  * Bus & mapper code paths seem to be the real hot spots. No obvious bottlenecks, but the frequency with which they're called requires highest level of optimization. Particularly, branching that can be resolved ahead of time instead of each time might help performance significantly.
 
 ### Development Operations
 
