@@ -533,7 +533,7 @@ public:
         // In the meantime, just ignore and return intended value
         // During cycles 1-64 (secondary OAM clearing), this always
         // returns 0xFF
-        if(cycle >= 1 && cycle <= 64)
+        if(cycle >= 1 && cycle <= 64 && isRenderingEnabled)
             return 0xFF;
         return primaryOAM.raw[oamaddr.raw];
     }
