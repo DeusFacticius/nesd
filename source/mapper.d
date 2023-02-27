@@ -10,29 +10,41 @@ import rom;
 import ppu;
 import cpu;
 
-immutable addr HORIZ_MIRROR_MASK    = (~0x0400) & 0xFFFF;
-immutable addr VERT_MIRROR_MASK     = (~0x0800) & 0xFFFF;
-immutable addr FOUR_WAY_MASK        = 0xFFFF;   // no bit masking
-immutable addr NT_SELECT_MASK       = 0x0C00;
+private immutable addr HORIZ_MIRROR_MASK    = (~0x0400) & 0xFFFF;
+private immutable addr VERT_MIRROR_MASK     = (~0x0800) & 0xFFFF;
+private immutable FOUR_WAY_MASK             = 0xFFFF;   // no bit masking
+private immutable NT_SELECT_MASK            = 0x0C00;
 
-immutable addr PRG_RAM_START        = 0x6000;
-immutable addr PRG_RAM_END          = 0x7FFF;
+// CPU address space regions //////////////////////////////////////////////////////////////////////
+private enum PRG_RAM_START                  = 0x6000;
+private enum PRG_RAM_END                    = 0x7FFF;
 // PRG RAM size is dictated by cartridge, up to 8KiB but often less
 // When size is less than 8KiB (e.g. 2 - 4KiB), the remainder of address space
 // is mirrored to fill the window
+private enum PRG_ROM_START                  = 0x8000;
+private enum PRG_ROM_END                    = 0xFFFF;
+private enum PRG_ROM_SIZE                   = 0x4000;
 
-private static enum PRG_ROM_START   = 0x8000;
-private static enum PRG_ROM_END     = 0xFFFF;
-private static enum PRG_ROM_LOWER_START = 0x8000;
-private static enum PRG_ROM_LOWER_END   = 0xBFFF;
-private static enum PRG_ROM_UPPER_START = 0xC000;
-private static enum PRG_ROM_UPPER_END   = 0xFFFF;
-private static enum CHR_ROM_START = 0x0000;
-private static enum CHR_ROM_END   = 0x1FFF;
-private static enum CHR_ROM_LOWER_START = 0x0000;
-private static enum CHR_ROM_LOWER_END   = 0x0FFF;
-private static enum CHR_ROM_UPPER_START = 0x1000;
-private static enum CHR_ROM_UPPER_END   = 0x1FFF;
+private enum PRG_ROM_LOWER_START            = 0x8000;
+private enum PRG_ROM_LOWER_END              = 0xBFFF;
+private enum PRG_ROM_UPPER_START            = 0xC000;
+private enum PRG_ROM_UPPER_END              = 0xFFFF;
+
+// PPU address space regions //////////////////////////////////////////////////////////////////////
+private enum CHR_START                      = 0x0000;
+private enum CHR_END                        = 0x1FFF;
+private enum CHR_SIZE                       = 0x2000;
+// Lower CHR bank, aka the 'left' pattern table
+private enum CHR_LOWER_START                = 0x0000;
+private enum CHR_LOWER_END                  = 0x0FFF;
+// Upper CHR bank, aka the 'right' pattern table
+private enum CHR_UPPER_START                = 0x1000;
+private enum CHR_UPPER_END                  = 0x1FFF;
+// Nametable regions
+private enum NT_START                       = 0x2000;
+private enum NT_END                         = 0x3EFF;
+// Nametables are only actually 4x 1KiB (0x400) in size,
+// so 0x3000 - 0x3EFF is actually a mirror of 0x2000 - 0x2EFF
 
 /**
     Abstract class for representing a 'mapper' (onboard game-cartridge circuitry).
@@ -304,9 +316,7 @@ class UxROMMapper : NROMMapper {
 
     this(NESFile nesFile, PPU ppu) {
         super(nesFile, ppu);
-        // The 'upper' bank ($C000-$FFFF) is fixed (cannot be bank switched), but unable to find specs on _which_
-        // bank that is within the file :-/
-        // For now -- assume its always the last one (?)
+        // The 'upper' PRG bank ($C000-$FFFF) is fixed (cannot be bank switched) to the last bank in the ROM
         auto numBanks = nesFile.prgRomBanks.length;
         assert(numBanks > 0);
         frozenBank = (numBanks - 1) & 0xFF;
@@ -519,19 +529,19 @@ class MMC1Mapper : NROMMapper {
 
     /// Translate a PPU address in CHR range ($0000-$1FFFF) to a (bitpacked) bank index and local offset
     uint mapChrAddressToBankAndOffset(addr address) {
-        assert(address >= CHR_ROM_START && address <= CHR_ROM_END);
+        assert(address >= CHR_START && address <= CHR_END);
 
         ubyte bankIdx;
         addr localOffset;
 
         if(control.dualBankMode) {
-            bool upper = (address & 0x1000) > 0;
+            bool upper = (address >= 0x1000);
             ubyte bankSelector = (upper ? chrBankSelect[1] : chrBankSelect[0]);
             // Translate 4KiB half-bank to 8KiB full bank index by dividing by 2
             bankIdx = (bankSelector >> 1) & 0x0F;
             // Translate the 8KiB offset to local offset by masking the low 12 bits and using the LSB of the bank
             // selector as the MSB
-            localOffset = ((bankSelector&1) << 13) | (address & 0x0FFF);
+            localOffset = ((bankSelector&1) << 12) | (address & 0x0FFF);
         } else {
             // in 8KiB bank mode, only the first chrBankSelector is used and the lowest bit is ignored
             bankIdx = chrBankSelect[0] & 0x1E;
@@ -542,7 +552,7 @@ class MMC1Mapper : NROMMapper {
     }
 
     ubyte readWritePpuChr(bool write)(addr address, const ubyte value = 0) {
-        assert(address >= CHR_ROM_START && address <= CHR_ROM_END);
+        assert(address >= CHR_START && address <= CHR_END);
 
         auto mapped = mapChrAddressToBankAndOffset(address);
         ubyte bankIdx = (mapped >> 16) & 0xFF;
