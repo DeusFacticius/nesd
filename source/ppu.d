@@ -422,23 +422,21 @@ public:
             (scanline == NTSC_PRERENDER_SCANLINE && cycle < 1);
     }
 
+    @property bool pendingNMI() const {
+        return (isInVBlank && status.vblankActive && ctrl.nmiEnabled);
+    }
+
     void writePPUCTRL(ubyte value) {
         // Set the nametable select bits in t
         vTmpPtr.nametableSelect = value & 0x03;
         // Rest of the bits go to PPUCTRL (masking out nametable select bits)
         // TODO: Should the nametableSelect bits be masked out? maybe doesn't matter
         //      since PPUCTRL is supposed to be write-only
-        auto oldValue = ctrl;
         ctrl.value = value & ~0x03;
-        // Setting nmiEnabled during VBlank can trigger an out-of-sync NMI, and
-        // or even multiple NMI's during VBlank if the flag is toggled rapidly without
-        // reading PPUSTATUS (which resets vblankActive)
-        if(!oldValue.nmiEnabled && ctrl.nmiEnabled && status.vblankActive) {
-            assert(isInVBlank);
-            triggerVBlankNMI();
-        }
     }
 
+    // tickCounter of last time PPUSTATUS was read, for proper quirk emulation (see checkForVBlank)
+    uint lastStatusRead;
     ubyte readPPUSTATUS() {
         // Only masked bits from PPUSTATUS are read, the rest are 'open bus', meaning
         // they will be whatever was 'left' in the PPU address bus latch
@@ -450,6 +448,8 @@ public:
         writeToggle = false;
         // The vblank status flag is cleared upon reading
         status.vblankActive = false;
+        // Record PPU tick of last time PPUSTATUS was read / vblankActive cleared
+        lastStatusRead = tickCounter;
         return result;
     }
 
@@ -929,9 +929,13 @@ public:
         // On the scanline _after_ the first post-render scanline, on second cycle (cycle 1), vblank begins
         if(scanline == 241) {
             if(cycle == 1) {
-                // Set the PPUSTATUS.vblankActive flag
-                status.vblankActive = true;
-                triggerVBlankNMI();
+                if(lastStatusRead == tickCounter) {
+                    // PPUSTATUS read 1 cycle before, flag is never set and NMI surpressed
+                } else {
+                    // Set the PPUSTATUS.vblankActive flag
+                    status.vblankActive = true;
+                    triggerVBlankNMI();
+                }
 
                 // Trigger the general purpose frame listeners
                 triggerFrameListeners();
@@ -942,7 +946,7 @@ public:
     void triggerFrameListeners() {
         // General purpose listeners are called regardless
         foreach(listener; frameListeners) {
-            listener(this, screen[]);
+            listener(this, screen);
         }
     }
 
@@ -1063,7 +1067,7 @@ public:
 
     void triggerVBlankNMI() {
         // the vblankInterruptListener is only triggered if _both_ ctrl.nmiEnabled
-        // and status.nmiEnabled are set
+        // and status.vblankActive are set
         if(status.vblankActive && ctrl.nmiEnabled) {
             assert(isInVBlank);
             if(vblankInterruptListener)

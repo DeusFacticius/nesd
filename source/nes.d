@@ -42,12 +42,15 @@ class NES {
         cpuBus = new CPUBus(cpu, apu, ppu);
         cpu.bus = cpuBus;
 
+        //cpu.addIRQSource(c => apu.pendingIRQ);
+        cpu.addNMISource(c => ppu.pendingNMI);
+
         ppu.vblankInterruptListener = &this.onVBlankInterrupt;
     }
 
     void onVBlankInterrupt(PPU ppu) {
         assert(this.ppu is ppu);
-        cpu.enqueueNMIInterrupt();
+        //cpu.enqueueNMIInterrupt();
     }
 
     void insertCartridge(NESFile crt) {

@@ -558,7 +558,11 @@ class CPU {
     ubyte opcode;
     NESBus bus;
 
-    bool pendingNMI, pendingIRQ, inInterrupt;
+    alias InterruptSource = bool delegate(in CPU cpu);
+    InterruptSource[] irqSources;
+    InterruptSource[] nmiSources;
+    bool pendingNMI, pendingIRQ;
+    int interruptDepth;
 
     ubyte[CPU_RAM_SIZE] internalRAM;
 
@@ -568,6 +572,22 @@ class CPU {
         currentState = new Fiber(&this.step);
     }
 
+    bool oldPendingNMI;
+    bool pollInterrupts() {
+        // IRQs are 'level' sensitive -- they only remain 'active' so long as the source remains 'active'
+        pendingIRQ = any!(s => s(this))(irqSources);
+
+        // NMIs are 'edge' sensitive -- e.g. they 'stick' once set, regardless of whether the source remains active
+        bool newPendingNMI = any!(s => s(this))(nmiSources);
+        pendingNMI = (newPendingNMI &&! oldPendingNMI);
+        oldPendingNMI = newPendingNMI;
+
+        // Evaluate whether an interrupt should be triggered
+        return pendingNMI || (pendingIRQ && !regs.P.I);
+    }
+
+    @property bool inInterrupt() const { return interruptDepth > 0; }
+
     void reset() {
         // Finish executing any in-progress operation
         //while(currentState.state != Fiber.State.TERM)
@@ -576,7 +596,8 @@ class CPU {
         currentState.reset();
 
         // Clear interrupt state
-        pendingNMI = pendingIRQ = inInterrupt = false;
+        pendingNMI = pendingIRQ = false;
+        interruptDepth = 0;
 
         // Read the reset vector from ROM
         ubyte lo, hi;
@@ -632,7 +653,8 @@ class CPU {
 
         // Query pending interrupts -- a pending NMI will always trigger,
         // however an IRQ will only trigger if Interrupt Disable is clear
-        if(pendingNMI || (pendingIRQ && !regs.P.I)) {
+        //if(pendingNMI || (pendingIRQ && !regs.P.I)) {
+        if(pollInterrupts()) {
             // Perform the interrupt sequence and short-circuit
             doInterrupt();
             return;
@@ -897,14 +919,22 @@ class CPU {
         }
     }
 
-    void enqueueNMIInterrupt() {
+    deprecated void enqueueNMIInterrupt() {
         if(!inInterrupt)
             pendingNMI = true;
     }
 
-    void enqueueIRQInterrupt() {
+    deprecated void enqueueIRQInterrupt() {
         if(!inInterrupt)
             pendingIRQ = true;
+    }
+
+    void addNMISource(InterruptSource src) {
+        nmiSources ~= src;
+    }
+
+    void addIRQSource(InterruptSource src) {
+        irqSources ~= src;
     }
 
     void doInterrupt() {
@@ -932,14 +962,19 @@ class CPU {
         // At least one of the pending interrupt flags should be set
         assert(pendingNMI || pendingIRQ, "interrupt() called without a pending interrupt");
         addr target = (pendingNMI ? CPU_NMI_VECTOR : CPU_IRQ_VECTOR);
+        // Push processor status with B flag *clear*
         pushStack(regs.P.P & (~ProcessorStatus.Flags.BREAK));
+        // Read PCL, set I flag
         regs.P.I = true;
         regs.PCL = readBus(target);
         regs.PCH = readBus(cast(addr)((target+1)&0xFFFF));
         // Both interrupt flags are cleared, regardless of which was actually
         // invoked
-        pendingNMI = pendingIRQ = false;
-        inInterrupt = true;
+        //pendingNMI = pendingIRQ = false;
+        // IRQs require their source to be cleared (e.g. frame counter), but NMIs are always cleared
+        pendingNMI = false;
+        ++interruptDepth;
+        debug(interrupt) writefln("[CPU] INC interrupt depth: %d", interruptDepth);
     }
 
     /// ADC - ADd with Carry Accumulator (implementation)
@@ -1824,9 +1859,9 @@ class CPU {
             6  $0100,S  R  pull PCH from stack
          */
 
-        if(!inInterrupt) {
-            // TODO: Log odd behavior (?)
-        }
+        //if(!inInterrupt) {
+        //    // TODO: Log odd behavior (?)
+        //}
 
         // Dummy tick between decode and operation (#2 above)
         //readPC!false();
@@ -1839,7 +1874,8 @@ class CPU {
         regs.P.P = (popStack() & ~ProcessorStatus.Flags.BREAK) | ProcessorStatus.Flags.RESERVED;
         regs.PCL = popStack();
         regs.PCH = popStack();
-        inInterrupt = false;
+        --interruptDepth;
+        debug(interrupt) writefln("[CPU] DEC interrupt depth: %d", interruptDepth);
     }
 
     // TODO: Unit test RTI once bus is functional

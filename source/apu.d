@@ -793,7 +793,7 @@ class FrameCounter {
         if(htickHandler && FOURSTEP_HFRAMES.canFind(apuCycleCounter))
             htickHandler();
 
-        frameInterrupt = !interruptInhibit &&
+        frameInterrupt |= !interruptInhibit &&
             (apuCycleCounter >= (14914<<1) && apuCycleCounter <= (14915<<1));
         if(apuCycleCounter >= FOURSTEP_RESET)
             apuCycleCounter = 0;
@@ -867,6 +867,11 @@ class APU {
 
         // Complete initialization with a full reset
         reset();
+    }
+
+    @property bool pendingIRQ() const {
+        // TODO: add DPCM interrupt
+        return frameCounter.frameInterrupt && !frameCounter.interruptInhibit;
     }
 
     @property SampleBufferListener sampleBufferListener() {
