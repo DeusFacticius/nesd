@@ -8,6 +8,7 @@ import bus;
 import util;
 import rom;
 import ppu;
+import apu : Divider;   // TODO: Move this to util?
 import cpu;
 
 private immutable addr HORIZ_MIRROR_MASK    = (~0x0400) & 0xFFFF;
@@ -72,6 +73,11 @@ class Mapper {
     NESFile nesFile;
     PPU     ppu;
 
+    // overridable
+    bool getIRQStatus() {
+        return false;
+    }
+
     /// Helper function to translate PPU nametable horizontal mirroring
     pure static addr horizontalMirror(addr address) {
         // For horizontal mirroring:
@@ -105,6 +111,7 @@ shared static this() {
         0: defaultMapperFactoryFunc!NROMMapper(),
         1: defaultMapperFactoryFunc!MMC1Mapper(),
         2: defaultMapperFactoryFunc!UxROMMapper(),
+        4: defaultMapperFactoryFunc!MMC3Mapper(),
     ];
     tmp.rehash();
     MAPPER_REGISTRY = assumeUnique(tmp);
@@ -159,6 +166,9 @@ class NROMMapper : Mapper {
     alias ChrBank = ubyte[8192];
     ubyte[] chrRamBank;
 
+    alias NTMirrorFunc = addr function(addr);
+    NTMirrorFunc ntMirrorFunc;
+
     this(NESFile file, PPU ppu) {
         super(file, ppu);
         // Ensure the ROM has at least 1 PRG ROM bank(s)
@@ -171,6 +181,11 @@ class NROMMapper : Mapper {
         // If no CHR ROM banks provided, assume 8KiB of on-board CHR RAM is intended
         if(this.nesFile.chrRomBanks.length == 0)
             chrRamBank = new ubyte[8192];
+
+        if(nesFile.header.mirrorMode == MIRROR_MODE_HORIZONTAL)
+            ntMirrorFunc = &horizontalMirror;
+        else
+            ntMirrorFunc = &verticalMirror;
     }
 
     override ubyte readPPU(addr address) {
@@ -227,13 +242,7 @@ class NROMMapper : Mapper {
                 // NROM delegates to PPU internal VRAM, but mirroring arrangement depends on
                 // solder pad configuration
                 // TODO: Consider 4-screen mode, which means ignoring this bit
-                addr target;
-                if(nesFile.header.mirrorMode == MIRROR_MODE_HORIZONTAL) {
-                    target = horizontalMirror(address);
-                } else {
-                    // bit 11 is ignored
-                    target = verticalMirror(address);
-                }
+                addr target = ntMirrorFunc(address);
                 static if(write) {
                     ppu.writeVRAM(target, value);
                     return value;
@@ -672,5 +681,321 @@ class MMC1Mapper : NROMMapper {
             // Read target from VRAM
             return ppu.readVRAM(target);
         }
+    }
+}
+
+/// Implementation of MMC3 (iNes mapper 004), used by SMB3 et al
+/// Reference: https://www.nesdev.org/wiki/MMC3
+class MMC3Mapper : NROMMapper {
+
+    // The iNES mapper ID corresponding to this mapper
+    immutable static uint MAPPER_ID = 4;
+
+    union BankSelectRegister {
+        ubyte raw;
+        struct {
+            mixin(bitfields!(
+                uint, "targetDataReg", 3,
+                uint, "unused", 2,
+                bool, "nothing", 1, // Not used for MMC3, but possibly used on MMC6
+                bool, "prgRomBankMode", 1,
+                bool, "chrA12Inversion", 1,
+            ));
+        }
+    }
+
+    alias BankDataRegister = ubyte;
+
+    union MirrorConfigRegister {
+        ubyte raw;
+        struct {
+            mixin(bitfields!(
+                uint, "mirrorMode", 1,
+                uint, "unused", 7,
+            ));
+        }
+    }
+
+    union PrgRamProtectRegister {
+        ubyte raw;
+        struct {
+            mixin(bitfields!(
+                uint, "ignored", 4,
+                uint, "unused", 2,  // unused on MMC3, may be used for MMC6
+                bool, "writeProtectEnable", 1,
+                bool, "prgRamEnable", 1,
+            ));
+        }
+    }
+
+    enum BANK_SELECT_START  = 0x8000;   // Only EVEN addresses within this range
+    enum BANK_SELECT_END    = 0x9FFF;
+    enum BANK_DATA_START    = 0x8000;   // Only ODD addresses within this range
+    enum BANK_DATA_END      = 0x9FFF;
+    enum MIRROR_CFG_START   = 0xA000;   // Only EVEN addresses within this range
+    enum MIRROR_CFG_END     = 0xBFFF;
+    enum PRG_RAM_PROTECT_START  = 0xA000;   // Only ODD addresses within this range
+    enum PRG_RAM_PROTECT_END    = 0xBFFF;
+    enum IRQ_LATCH_START        = 0xC000;   // Only EVEN addresses within this range
+    enum IRQ_LATCH_END          = 0xDFFF;
+    enum IRQ_RELOAD_START       = 0xC000;   // Only ODD addresses within this range
+    enum IRQ_RELOAD_END         = 0xDFFF;
+    enum IRQ_ENABLE_START       = 0xE000;   // Only EVEN addresses within this range
+    enum IRQ_ENABLE_END         = 0xFFFF;
+    enum IRQ_DISABLE_START      = 0xE000;   // Only ODD addresses within this range
+    enum IRQ_DISABLE_END        = 0xFFFF;
+
+    enum MirrorMode : ubyte {
+        VERTICAL = 0,
+        HORIZONTAL = 1,
+    }
+
+    protected BankSelectRegister bankSelect;
+    protected BankDataRegister[8] bankDataRegs;
+    protected MirrorConfigRegister mirrorCfg;
+    protected const(ubyte)[][4] activePrgRomBanks;   // 4x 8KiB PRG ROM banks
+    protected const(ubyte)[][]  prgRomBanks;        // 16KiB ROM banks mapped into 8KiB sub-banks
+    protected const(ubyte)[][8] activeChrRomBanks;  // 8x 1KiB CHR banks
+    protected const(ubyte)[][]  chrRomBanks;        // 8KiB ROM banks mapped into 1KiB sub-banks
+    protected Divider!ubyte scanlineCounter;
+    protected bool irqEnabled;
+    protected ubyte ppuA12History;
+    protected bool irqStatus;
+
+    this(NESFile file, PPU ppu) {
+        super(file, ppu);
+        // Initialize the scanline counter trigger
+        scanlineCounter.tock = &onScanlineCounterTrigger;
+        // Map the 16KiB PRG ROM banks from file into 2x8KiB banks (as slices)
+        prgRomBanks = new const(ubyte[])[(nesFile.prgRomBanks.length*2)];
+        foreach(i; 0..nesFile.prgRomBanks.length) {
+            prgRomBanks[i<<1] = nesFile.prgRomBanks[i][0..0x2000];
+            prgRomBanks[(i<<1)+1] = nesFile.prgRomBanks[i][0x2000..$];
+        }
+        // Initialize the cached PRG mappings
+        updatePrgBankMaps();
+        // Map the 8KiB CHR ROM banks of the file into 8x1KiB banks as slices
+        chrRomBanks = new const(ubyte[])[nesFile.chrRomBanks.length*8];
+        foreach(i; 0..nesFile.chrRomBanks.length) {
+            chrRomBanks[i<<3] = nesFile.chrRomBanks[i][0..0x400];
+            chrRomBanks[(i<<3)+1] = nesFile.chrRomBanks[i][0x400..0x800];
+            chrRomBanks[(i<<3)+2] = nesFile.chrRomBanks[i][0x800..0xC00];
+            chrRomBanks[(i<<3)+3] = nesFile.chrRomBanks[i][0xC00..0x1000];
+            chrRomBanks[(i<<3)+4] = nesFile.chrRomBanks[i][0x1000..0x1400];
+            chrRomBanks[(i<<3)+5] = nesFile.chrRomBanks[i][0x1400..0x1800];
+            chrRomBanks[(i<<3)+6] = nesFile.chrRomBanks[i][0x1800..0x1C00];
+            chrRomBanks[(i<<3)+7] = nesFile.chrRomBanks[i][0x1C00..0x2000];
+        }
+        // Initialize the cached CHR mappings
+        updateChrBankMaps();
+    }
+
+    void onScanlineCounterTrigger() {
+        irqStatus = irqEnabled;
+    }
+
+    override bool getIRQStatus() {
+        return irqStatus;
+    }
+
+    void forceIRQReset() {
+        // Clear the scanline counter so that it will be reset on next tick
+        scanlineCounter.counter = 0;
+    }
+
+    void tickScanline() {
+        scanlineCounter.tick();
+    }
+
+    void checkScanlineClock(addr address) {
+        // Shift the history left by 1, set bit 0 to new A12 value
+        ppuA12History = ((ppuA12History << 1) | ((address >> 12) & 1)) & 0xFF;
+        // Scanline counter triggered by rising edge of A12 after three consecutive lows (xxxx0001)
+        if((ppuA12History & 0xF) == 1)
+            tickScanline();
+    }
+
+    void updateChrBankMaps() {
+        if(bankSelect.chrA12Inversion == 0) {
+            // 4 lowest banks are mapped to 2x contiguous 2KiB banks (ignoring lower bit of bank selector)
+            ubyte idx = (bankDataRegs[0]&0xFE) % chrRomBanks.length;
+            activeChrRomBanks[0] = chrRomBanks[idx];
+            activeChrRomBanks[1] = chrRomBanks[idx+1];
+            idx = (bankDataRegs[1]&0xFE) % chrRomBanks.length;
+            activeChrRomBanks[2] = chrRomBanks[idx];
+            activeChrRomBanks[3] = chrRomBanks[idx+1];
+            // 4 upper banks are mapped to 1KiB banks directly by registers R2-R5
+            activeChrRomBanks[4] = chrRomBanks[bankDataRegs[2] % $];
+            activeChrRomBanks[5] = chrRomBanks[bankDataRegs[3] % $];
+            activeChrRomBanks[6] = chrRomBanks[bankDataRegs[4] % $];
+            activeChrRomBanks[7] = chrRomBanks[bankDataRegs[5] % $];
+        } else {
+            // Reverse of the above
+            activeChrRomBanks[0] = chrRomBanks[bankDataRegs[2] % $];
+            activeChrRomBanks[1] = chrRomBanks[bankDataRegs[3] % $];
+            activeChrRomBanks[2] = chrRomBanks[bankDataRegs[4] % $];
+            activeChrRomBanks[3] = chrRomBanks[bankDataRegs[5] % $];
+            ubyte idx = (bankDataRegs[0]&0xFE) % chrRomBanks.length;
+            activeChrRomBanks[4] = chrRomBanks[idx];
+            activeChrRomBanks[5] = chrRomBanks[idx+1];
+            idx = (bankDataRegs[1]&0xFE) & chrRomBanks.length;
+            activeChrRomBanks[6] = chrRomBanks[idx];
+            activeChrRomBanks[7] = chrRomBanks[idx+1];
+        }
+    }
+
+    void updatePrgBankMaps() {
+        if(bankSelect.prgRomBankMode == 0) {
+            // R6/7 determine lower two prg ROM banks, upper two prg ROM banks are fixed to last two banks
+            // PRG ROM banks from file are in 16KiB banks, so we have to adapt to 8KiB banks
+            // TODO: should use a mask rather than modulus
+            activePrgRomBanks[0] = prgRomBanks[bankDataRegs[6] % $];
+            activePrgRomBanks[1] = prgRomBanks[bankDataRegs[7] % $];
+            activePrgRomBanks[2] = prgRomBanks[$-2];
+            activePrgRomBanks[3] = prgRomBanks[$-1];
+        } else {
+            // Mapping is less straightforward
+            activePrgRomBanks[0] = prgRomBanks[$-2];    // The first bank is fixed to second-to-last bank
+            activePrgRomBanks[1] = prgRomBanks[bankDataRegs[7] % $]; // always determined by R7
+            activePrgRomBanks[2] = prgRomBanks[bankDataRegs[6] % $]; // determined by R6
+            activePrgRomBanks[3] = prgRomBanks[$-1];    // Always fixed to last bank
+        }
+    }
+
+    void setBankDataRegister(in ubyte value) {
+        uint target = (bankSelect.targetDataReg & 0x7);
+        bankDataRegs[target] = value;
+        // TODO: Update bank mapping caches?
+        debug(mmc3) writefln("[MMC3] Setting bank data register %d to $%02X", target, value);
+        if(target >= 6) {
+            updatePrgBankMaps();
+        } else {
+            updateChrBankMaps();
+        }
+    }
+
+    void setBankSelectRegister(in BankSelectRegister value) {
+        bankSelect = value;
+        debug(mmc3) writefln("[MMC3] Setting bank select register to: %02X", bankSelect.raw);
+        updateChrBankMaps();
+        updatePrgBankMaps();
+        // TODO: Update bank mapping caches?
+    }
+
+    void setPrgRamProtectRegister(in PrgRamProtectRegister value) {
+        // No-op
+        debug(mmc3) writefln("[MMC3] Attempted to configure PRG RAM protection register: %02X", value.raw);
+    }
+
+    void setMirrorConfigRegister(in MirrorConfigRegister value) {
+        mirrorCfg = value;
+        if(mirrorCfg.mirrorMode == MirrorMode.HORIZONTAL) {
+            ntMirrorFunc = &horizontalMirror;
+            debug(mmc3) writefln("[MMC3] Setting mirror mode to HORIZONTAL");
+        } else {
+            ntMirrorFunc = &verticalMirror;
+            debug(mmc3) writefln("[MMC3] Setting mirror mode to VERTICAL");
+        }
+    }
+
+    void setIRQLatch(in ubyte value) {
+        //irqReloadValue = value;
+        // TODO: Set a reset flag?
+        scanlineCounter.period = value;
+        debug(mmc3) writefln("[MMC3] Setting IRQ Latch to: %d", value);
+    }
+
+    void enableIRQ() {
+        irqEnabled = true;
+        debug(mmc3) writefln("[MMC3] Enabling IRQs");
+    }
+
+    void disableIRQ() {
+        // Writing to this register both disables IRQs AND acks any pending IRQs
+        debug(mmc3) writefln("[MMC3] Disabling and acknowledging IRQ (was enabled: %s, was active: %s)", irqEnabled, irqStatus);
+        irqStatus = irqEnabled = false;
+    }
+
+    override void writeCPU(addr address, const ubyte value) {
+        // TODO: implement prg ram protect? According to ref
+        //      (https://www.nesdev.org/wiki/MMC3#PRG_RAM_protect_($A001-$BFFF,_odd), most emulators opt to
+        //      omit this functionality
+        // Only for addresses > 0x8000 do we need to override default behavior
+        if(address < 0x8000) {
+            super.writeCPU(address, value);
+            return;
+        }
+        // Broad classify by page
+        ubyte page = (address >> 8) & 0xFF;
+        bool odd = (address & 1) > 0;
+        switch(page) {
+            case 0x80: .. case 0x9F:
+                // Bank select register / bank data register
+                if(odd)
+                    setBankDataRegister(value);
+                else
+                    setBankSelectRegister(BankSelectRegister(value));
+                break;
+
+            case 0xA0: .. case 0xBF:
+                // Mirror config / PRG RAM protect registers
+                if(odd)
+                    setPrgRamProtectRegister(PrgRamProtectRegister(value));
+                else
+                    setMirrorConfigRegister(MirrorConfigRegister(value));
+                break;
+
+            case 0xC0: .. case 0xDF:
+                // IRQ latch / IRQ reload
+                if(odd)
+                    forceIRQReset();
+                else
+                    setIRQLatch(value);
+                break;
+
+            case 0xE0: .. case 0xFF:
+                // IRQ enable / disable
+                if(odd)
+                    enableIRQ();
+                else
+                    disableIRQ();
+                break;
+            default:
+                assert(false, "Execution should never reach here");
+        }
+    }
+
+    override ubyte readCPU(addr address) {
+        // Only PRG ROM address ranges need behavior overridden
+        if(address < 0x8000)
+            return super.readCPU(address);
+
+        // Mask the address for the local offset within the bank
+        addr localOffset = address & 0x1FFF;
+        // bits 13-14 determine which 2KiB bank
+        addr bankIndex = (address >> 13) & 0x3;
+        return activePrgRomBanks[bankIndex][localOffset];
+    }
+
+    override ubyte readPPU(addr address) {
+        ubyte page = (address >> 8) & 0xFF;
+        switch(page) {
+            case 0x00: .. case 0x1F:
+                // CHR ROM (RAM?)
+                addr localOffset = address & 0x3FF; // Local offset within the 1KiB banks
+                // Bits 10-12 determine the index of the 1KiB bank within the 8KiB space
+                addr bankIndex = (address >> 10) & 0x7;
+                return activeChrRomBanks[bankIndex][localOffset];
+            default:
+                // Nametable + mirrors & palettes
+                // Delegate to superclass
+                return super.readPPU(address);
+        }
+        assert(false, "Execution should never reach this line");
+    }
+
+    override void writePPU(addr address, const ubyte value) {
+        // No overrides needed? delegate to superclass
+        super.writePPU(address, value);
     }
 }

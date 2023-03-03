@@ -913,6 +913,7 @@ class CPU {
     }
 
     void dmaTransfer(ubyte page) {
+        debug(verbose) writefln("[CPU] Initiating OMADMA transfer from $%04X", (page << 8) & 0xFF00);
         foreach(i; 0..256) {
             ubyte value = readBus(makeAddr(ub(i), page));
             writeBus(0x2004, value);
@@ -935,6 +936,10 @@ class CPU {
 
     void addIRQSource(InterruptSource src) {
         irqSources ~= src;
+    }
+
+    void removeIRQSource(InterruptSource src) {
+
     }
 
     void doInterrupt() {

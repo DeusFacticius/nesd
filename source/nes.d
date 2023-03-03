@@ -42,10 +42,16 @@ class NES {
         cpuBus = new CPUBus(cpu, apu, ppu);
         cpu.bus = cpuBus;
 
-        //cpu.addIRQSource(c => apu.pendingIRQ);
+        cpu.addIRQSource(c => apu.pendingIRQ);
+        cpu.addIRQSource(&checkMapperIRQ);
         cpu.addNMISource(c => ppu.pendingNMI);
 
         ppu.vblankInterruptListener = &this.onVBlankInterrupt;
+    }
+
+    // Helper function to interface Mapper IRQ sources with CPU
+    private bool checkMapperIRQ(in CPU c) {
+        return mapper && mapper.getIRQStatus();
     }
 
     void onVBlankInterrupt(PPU ppu) {
