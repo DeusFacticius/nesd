@@ -811,8 +811,9 @@ class MMC3Mapper : NROMMapper {
         // Shift the history left by 1, set bit 0 to new A12 value
         ppuA12History = ((ppuA12History << 1) | ((address >> 12) & 1)) & 0xFF;
         // Scanline counter triggered by rising edge of A12 after three consecutive lows (xxxx0001)
-        if((ppuA12History & 0xF) == 1)
-            tickScanline();
+        if((ppuA12History & 0xF) == 1) {
+            debug(scanline) tickScanline();
+        }
     }
 
     void updateChrBankMaps() {
@@ -866,7 +867,7 @@ class MMC3Mapper : NROMMapper {
         uint target = (bankSelect.targetDataReg & 0x7);
         bankDataRegs[target] = value;
         // TODO: Update bank mapping caches?
-        debug(mmc3) writefln("[MMC3] Setting bank data register %d to $%02X", target, value);
+        //debug(mmc3) writefln("[MMC3] Setting bank data register %d to $%02X", target, value);
         if(target >= 6) {
             updatePrgBankMaps();
         } else {
@@ -876,7 +877,7 @@ class MMC3Mapper : NROMMapper {
 
     void setBankSelectRegister(in BankSelectRegister value) {
         bankSelect = value;
-        debug(mmc3) writefln("[MMC3] Setting bank select register to: %02X", bankSelect.raw);
+        //debug(mmc3) writefln("[MMC3] Setting bank select register to: %02X", bankSelect.raw);
         updateChrBankMaps();
         updatePrgBankMaps();
         // TODO: Update bank mapping caches?
@@ -979,6 +980,7 @@ class MMC3Mapper : NROMMapper {
 
     override ubyte readPPU(addr address) {
         ubyte page = (address >> 8) & 0xFF;
+        checkScanlineClock(address);
         switch(page) {
             case 0x00: .. case 0x1F:
                 // CHR ROM (RAM?)
@@ -995,7 +997,8 @@ class MMC3Mapper : NROMMapper {
     }
 
     override void writePPU(addr address, const ubyte value) {
-        // No overrides needed? delegate to superclass
+        // Just need to possibly clock scanline counter
+        checkScanlineClock(address);
         super.writePPU(address, value);
     }
 }
