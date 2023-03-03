@@ -707,7 +707,7 @@ public:
                         spriteEvaluationOverflowTick();
                     }
                 }
-            } else if(cycle > 256 && cycle <= 320) {
+            } else if(cycle >= 257 && cycle <= 320) {
                 // During cycles 257-320 (HBLANK), sprite shift registers / latches
                 // are populated from secondaryOAM with results of sprite evaluation
                 // aka sprite fetching
@@ -717,18 +717,18 @@ public:
 
         // Almost identical above, but happens on BOTH visible scanlines,
         // and the pre-render scanine -- OAMADDR reset during cycles 257-320
-        if((visibleScanline || prerenderScanline) && cycle > 256 && cycle <= 320) {
+        if((visibleScanline || prerenderScanline) && cycle >= 257 && cycle <= 320) {
             oamaddr.raw = 0;
         }
     }
 
     void loadSpritePatternBuffer(uint sprIndex, bool high) {
-        assert(sprIndex >= 0 && sprIndex < secondaryOAM.length);
+        assert(sprIndex >= 0 && sprIndex < secondaryOAM.entries.length);
         assert(scanline >= 0 && scanline < NTSC_SCREEN_H);
         assert(cycle > 256 && cycle <= 320);
         assert(isRenderingEnabled);
 
-        OAMEntry* sprite = secondaryOAM.ptr + sprIndex;
+        OAMEntry* sprite = secondaryOAM.entries.ptr + sprIndex;
         auto spriteHeight = (ctrl.useLargeSprites ? 16 : 8);
         auto localY = scanline - sprite.y;
 
@@ -745,7 +745,11 @@ public:
                 // the second sprite must follow the first in the pattern table,
                 // large sprites must always use even tile numbers (the following odd
                 // number is the second tile).
-                tileNo = ub(localY < 8 ? sprite.tileIndex : sprite.tileIndex+1);
+                //tileNo = sprite.tileIndex & 0xFE;
+                tileNo = sprite.tileSelector & 0xFE;
+                if(localY >= 8)
+                    tileNo += 1;
+                //tileNo = ub(localY < 8 ? sprite.tileIndex : sprite.tileIndex+1);
                 bank = sprite.bankIndex & 1;
             } else {
                 tileNo = sprite.tileSelector;
@@ -836,7 +840,7 @@ public:
         // Secondary OAM index to operate on (bits 3-5 of cycle)
         auto sprIndex = (cycle >> 3) & 7;
         // local alias to target secondary OAM entry
-        OAMEntry *sprite = secondaryOAM.ptr + sprIndex;
+        OAMEntry *sprite = secondaryOAM.entries.ptr + sprIndex;
         auto subCycle = cycle & 7;
         if(subCycle == 3) {
             // During the first tick of the second 'garbage nametable fetch'
