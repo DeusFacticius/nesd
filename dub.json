@@ -20,6 +20,20 @@
 				"fluent-asserts": "~>1.0.0",
 				"silly": "~>1.1.1"
 			}
+		},
+		{
+			"name": "wasm",
+			"dependencies": {
+				"bindbc-sdl": "~>1.2.0"
+			},
+			"dflags-ldc": ["--output-o"],
+			"lflags": ["--allow-undefined"],
+			"versions": [
+				"BindSDL_Static"
+			],
+			"subConfigurations": {
+				"bindbc-sdl": "staticBC"
+			}
 		}
 	],
 	"description": "A Nintendo Entertainment System (NES) emulator in D.",
